@@ -1,157 +1,183 @@
 """
 Profile Creation Submodule
 
-This submodule handles the interactive profile creation/enrichment flow.
-It has its own system prompt and manages state separately from the main chat.
+Handles automatic profile creation/enrichment:
+1. Reads seed profile.md
+2. Extracts GitHub profile URL
+3. Scrapes pinned repos, clones them, analyzes code
+4. Generates github_summary.json
+5. Creates enriched .dxtr/dxtr_profile.md
 """
 
 import json
 import re
 from pathlib import Path
 from ollama import chat
-from ..agent import MODEL, _load_system_prompt
-from ..tools.web_fetch import fetch_url, TOOL_DEFINITION
-from . import github_explorer, website_explorer
+from ..agent import MODEL
+from ..tools import git_tools
+from . import github_explorer
 
 
-def _extract_and_explore_links(profile_content: str) -> str:
+def _extract_github_profile_url(profile_content: str) -> str | None:
     """
-    Extract URLs from profile and explore them using appropriate submodules.
+    Extract GitHub profile URL from profile content.
 
     Args:
-        profile_content: The raw profile.md content
+        profile_content: Raw profile.md content
 
     Returns:
-        str: Markdown-formatted summaries of all explored links
+        GitHub profile URL or None if not found
     """
-    # Extract URLs from the profile
-    url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
+    # Find all GitHub URLs
+    url_pattern = r'https?://github\.com/[^\s<>"{}|\\^`\[\]]+'
     urls = re.findall(url_pattern, profile_content)
 
-    if not urls:
-        return ""
-
-    print(f"\nFound {len(urls)} link(s) in profile. Exploring...")
-
-    summaries = []
-
+    # Filter to profile URLs only
     for url in urls:
-        # Route to appropriate explorer
-        if 'github.com' in url:
-            summary = github_explorer.explore(url, user_profile_md=profile_content)
-        else:
-            summary = website_explorer.explore(url)
+        if git_tools.is_profile_url(url):
+            return url
 
-        if summary:
-            summaries.append(summary)
-
-    if summaries:
-        return "\n\n---\n\n".join(summaries)
-    return ""
+    return None
 
 
-def _chat_with_tools(messages, tools=None, stream_output=True):
+def _analyze_github_repos(github_url: str) -> dict[str, str]:
     """
-    Chat with tool calling support.
-    
-    Handles the tool calling loop:
-    1. Send messages to LLM with available tools
-    2. If LLM calls a tool, execute it
-    3. Send tool results back to LLM
-    4. Repeat until LLM provides final response
-    
+    Scrape, clone, and analyze GitHub pinned repositories.
+
     Args:
-        messages: List of message dicts
-        tools: List of tool definitions (Ollama format)
-        stream_output: Whether to stream the final text output
-        
+        github_url: GitHub profile URL
+
     Returns:
-        tuple: (final_text, response_obj) where final_text is the complete response
+        Dict mapping file paths to JSON analysis strings
     """
-    # Add system prompt if not present
-    if not messages or messages[0].get("role") != "system":
-        system_prompt = _load_system_prompt("profile_creation")
-        messages = [{"role": "system", "content": system_prompt}] + messages
-    
-    conversation = messages.copy()
-    final_text = ""
-    response_obj = None
-    
-    # Tool calling loop
-    while True:
-        # Call the model
-        response = chat(
-            model=MODEL,
-            messages=conversation,
-            tools=tools if tools else [],
-            options={
-                "temperature": 0.3,
-                "num_ctx": 4096 * 4,
-            }
-        )
-        
-        response_obj = response
-        
-        # Check if the model wants to call tools
-        if hasattr(response.message, 'tool_calls') and response.message.tool_calls:
-            # Execute each tool call
-            for tool_call in response.message.tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = tool_call.function.arguments
-                
-                print(f"\n[Calling tool: {tool_name}({json.dumps(tool_args)})]")
-                
-                # Execute the tool
-                if tool_name == "fetch_url":
-                    result = fetch_url(**tool_args)
-                    if result["success"]:
-                        print(f"[Fetched: {result['url'][:60]}...]")
-                    else:
-                        print(f"[Error: {result['error']}]")
-                else:
-                    result = {"error": f"Unknown tool: {tool_name}"}
-                
-                # Add tool call and result to conversation
-                conversation.append({
-                    "role": "assistant",
-                    "tool_calls": [tool_call]
-                })
-                conversation.append({
-                    "role": "tool",
-                    "content": json.dumps(result)
-                })
-            
-            # Continue the loop to get next response
-            continue
+    print(f"\n[Fetching GitHub profile: {github_url}]")
+
+    # Fetch profile HTML
+    html = git_tools.fetch_profile_html(github_url)
+    if not html:
+        print("  [Failed to fetch profile HTML]")
+        return {}
+
+    # Extract pinned repos
+    pinned_repos = git_tools.extract_pinned_repos(html)
+
+    # Filter out dxtr-cli
+    pinned_repos = [repo for repo in pinned_repos if not repo.endswith('/dxtr-cli')]
+
+    if not pinned_repos:
+        print("  [No pinned repositories found]")
+        return {}
+
+    print(f"  [Found {len(pinned_repos)} pinned repository(ies)]")
+
+    # Clone repos
+    print(f"\n[Cloning repositories...]")
+    clone_results = []
+    for repo_url in pinned_repos:
+        result = git_tools.clone_repo(repo_url)
+        clone_results.append(result)
+
+        if result["success"]:
+            status = "✓ cached" if "cached" in result["message"].lower() else "✓ cloned"
+            print(f"  [{status}] {result['owner']}/{result['repo']}")
         else:
-            # No tool calls, this is the final response
-            if hasattr(response.message, 'content'):
-                final_text = response.message.content
-                if stream_output:
-                    # Stream the output for user to see
-                    print(final_text, end="", flush=True)
-            break
-    
-    return final_text, response_obj
+            print(f"  [✗ failed] {result['url']}: {result['message']}")
+
+    # Analyze repos
+    successful = [r for r in clone_results if r["success"]]
+    if not successful:
+        print("  [No repositories to analyze]")
+        return {}
+
+    print(f"\n[Analyzing {len(successful)} repository(ies)...]")
+
+    github_summary = {}
+
+    for result in successful:
+        repo_path = Path(result["path"])
+        print(f"  [Analyzing {result['owner']}/{result['repo']}...]")
+
+        # Find Python files
+        python_files = github_explorer.find_python_files(repo_path)
+
+        if not python_files:
+            print(f"    [No Python files found]")
+            continue
+
+        print(f"    [Found {len(python_files)} Python file(s)]")
+
+        # Analyze each file
+        for idx, py_file in enumerate(python_files, 1):
+            rel_path = py_file.relative_to(repo_path)
+            print(f"    [{idx}/{len(python_files)}] {rel_path}", end=" ", flush=True)
+
+            try:
+                source_code = py_file.read_text(encoding='utf-8')
+                file_size_kb = len(source_code) / 1024
+
+                # LLM analysis
+                response = chat(
+                    model=github_explorer.ANALYSIS_MODEL,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": """Assess this Python module for relevant experience, technologies, techniques, and implementations.
+
+Focus on:
+- Specific libraries/frameworks used (e.g., "torch.nn", "transformers", "scann")
+- Modern techniques present or absent (e.g., "ROPE", "flash attention", "KV caching")
+- Implementation patterns (e.g., "custom attention", "CUDA kernels", "NumPy-based")
+- Architectural approaches (e.g., "encoder-decoder", "transformer", "CNN")
+
+Output:
+1. Comprehensive list of keywords (technical terms, libraries, techniques)
+2. Brief module-level summary (2-3 sentences)"""
+                        },
+                        {
+                            "role": "user",
+                            "content": source_code
+                        }
+                    ],
+                    options={
+                        "temperature": 0.3,
+                        "num_ctx": 16384,
+                    },
+                    format=github_explorer.MODULE_ANALYSIS_SCHEMA
+                )
+
+                # Store the JSON string (matching embed_github_repo.py)
+                github_summary[str(py_file)] = response.message.content
+
+                # Show token counts
+                prompt_tokens = response.get("prompt_eval_count", 0)
+                completion_tokens = response.get("eval_count", 0)
+                print(f"({file_size_kb:.1f}KB, {prompt_tokens + completion_tokens} tokens)")
+
+            except Exception as e:
+                print(f"[ERROR: {str(e)}]")
+                continue
+
+    print(f"\n  [✓] Analyzed {len(github_summary)} file(s) total")
+
+    return github_summary
 
 
 def run():
     """
     Run the profile creation submodule.
 
-    This is an interactive submodule that:
-    1. Checks for existing profile.md
-    2. If missing, prompts user to create it
-    3. Runs Q&A session with user (LLM can explore links via tools)
-    4. Generates enriched profile
-    5. Returns control to main chat
+    Process:
+    1. Read seed profile.md
+    2. Extract GitHub profile URL
+    3. Analyze pinned repos -> github_summary.json
+    4. Create enriched .dxtr/dxtr_profile.md
 
     Returns:
-        str: Path to the enriched profile, or None if creation failed
+        str: Path to enriched profile, or None if creation failed
     """
     profile_path = Path("profile.md")
 
-    # Check if profile.md exists
+    # Check if seed profile exists
     if not profile_path.exists():
         print("\n" + "=" * 80)
         print("PROFILE NOT FOUND")
@@ -160,125 +186,113 @@ def run():
         print("\nTo create your profile, please:")
         print("1. Create a file named 'profile.md' in the current directory")
         print("2. Add information about yourself, your experience, and goals")
-        print("3. Restart DXTR to continue\n")
+        print("3. Include your GitHub profile URL (e.g., https://github.com/username)")
+        print("4. Restart DXTR to continue\n")
         return None
 
+    print("\n" + "=" * 80)
+    print("PROFILE INITIALIZATION")
+    print("=" * 80 + "\n")
+
+    # Read seed profile
     profile_content = profile_path.read_text()
+    print(f"[Reading seed profile: {len(profile_content)} characters]")
 
-    # Check profile length
-    estimated_tokens = len(profile_content) // 4
-    max_input_tokens = 4096 * 4
-
-    if estimated_tokens > max_input_tokens:
-        print(f"\n⚠️  WARNING: Profile is approximately {estimated_tokens} tokens")
-        print(f"   This exceeds the recommended maximum of {max_input_tokens} tokens\n")
-
-    print(f"Profile size: {len(profile_content)} characters")
-
-    # Extract and explore links using submodules
-    link_summaries = _extract_and_explore_links(profile_content)
-
-    # Build enriched context with profile + link summaries
-    enriched_context = profile_content
-    if link_summaries:
-        enriched_context += f"\n\n# Link Exploration Results\n\n{link_summaries}"
-
-    # Step 1: Generate clarification questions
-    print("\n" + "=" * 80)
-    print("STEP 1: GENERATING CLARIFICATION QUESTIONS")
-    print("=" * 80 + "\n")
-
-    print("Generating questions based on profile and explored links...\n")
-
-    questions_output, _ = _chat_with_tools(
-        messages=[{"role": "user", "content": enriched_context}],
-        tools=[],  # No tools needed, submodules already explored links
-        stream_output=True
-    )
-
-    print("\n")
-
-    # Parse questions
-    questions = []
-    for line in questions_output.strip().split("\n"):
-        line = line.strip()
-        if line and line[0].isdigit():
-            # Remove number prefix (e.g., "1. ", "1) ", "1.")
-            # Use regex to remove only the leading number and separator
-            question = re.sub(r'^\d+[\.\)]\s*', '', line)
-            # Strip any quotes that might have been added
-            question = question.strip('"\'')
-            # Only accept if it looks like a question (ends with ? and has substance)
-            if question and question.endswith("?") and len(question) > 10:
-                questions.append(question)
-
-    if not questions:
-        print("⚠️  No valid questions found in LLM output.")
-        print("    The LLM should output numbered questions ending with '?'")
-        print("    Proceeding without Q&A.\n")
-        qa_pairs = []
-    else:
-        # Step 2: Collect answers
-        print("\n" + "=" * 80)
-        print("STEP 2: ANSWER CLARIFICATION QUESTIONS")
-        print("=" * 80 + "\n")
-        print("Please answer the following questions (press Enter to skip).\n")
-
-        qa_pairs = []
-        for i, question in enumerate(questions, 1):
-            print(f"\n{i}. {question}")
-            answer = input("   Your answer: ").strip()
-            if answer:
-                qa_pairs.append({"question": question, "answer": answer})
-            else:
-                print("   (Skipped)")
-
-    # Step 3: Generate enriched profile
-    print("\n" + "=" * 80)
-    print("STEP 3: GENERATING ENRICHED PROFILE")
-    print("=" * 80 + "\n")
-
-    # Build user message with original profile, link summaries, and Q&A
-    qa_section = ""
-    if qa_pairs:
-        qa_section = "\n\nAdditional clarifications:\n"
-        for qa in qa_pairs:
-            qa_section += f"\nQ: {qa['question']}\nA: {qa['answer']}\n"
-
-    link_section = ""
-    if link_summaries:
-        link_section = f"\n\nLink exploration results:\n{link_summaries}"
-
-    user_message = f"""Original profile:
-{profile_content}
-{link_section}
-{qa_section}"""
-
-    print("Generating enriched profile...\n")
-    print("-" * 80)
-
-    enriched_output, response_obj = _chat_with_tools(
-        messages=[{"role": "user", "content": user_message}],
-        tools=[],  # No tools needed, submodules already explored links
-        stream_output=True
-    )
-
-    print("\n" + "-" * 80)
-
-    # Get token counts
-    if response_obj:
-        prompt_tokens = getattr(response_obj, "prompt_eval_count", 0)
-        completion_tokens = getattr(response_obj, "eval_count", 0)
-        print(f"\nInput tokens: {prompt_tokens}")
-        print(f"Output tokens: {completion_tokens}")
-
-    # Save enriched profile
+    # Create .dxtr directory
     dxtr_dir = Path(".dxtr")
     dxtr_dir.mkdir(exist_ok=True)
 
-    output_path = dxtr_dir / "profile_enriched.md"
-    output_path.write_text(enriched_output)
+    # Extract and analyze GitHub profile
+    github_url = _extract_github_profile_url(profile_content)
+    github_summary = {}
 
-    print(f"\nEnriched profile saved to {output_path}")
+    if github_url:
+        print(f"[Found GitHub profile URL: {github_url}]")
+        github_summary = _analyze_github_repos(github_url)
+
+        # Save github_summary.json
+        if github_summary:
+            summary_path = dxtr_dir / "github_summary.json"
+            summary_path.write_text(json.dumps(github_summary, indent=2))
+            print(f"\n[✓] Saved github_summary.json ({len(github_summary)} files)")
+        else:
+            print("\n[No GitHub analysis data to save]")
+    else:
+        print("[No GitHub profile URL found in profile.md]")
+
+    # Generate enriched profile
+    print("\n" + "=" * 80)
+    print("GENERATING ENRICHED PROFILE")
+    print("=" * 80 + "\n")
+
+    # Build context for enrichment
+    enrichment_context = f"""Original profile:
+{profile_content}
+"""
+
+    if github_summary:
+        # Add summary of GitHub analysis
+        num_files = len(github_summary)
+        repos = set()
+        for file_path in github_summary.keys():
+            # Extract repo name from path like .dxtr/repos/owner/repo/...
+            parts = Path(file_path).parts
+            if 'repos' in parts:
+                idx = parts.index('repos')
+                if idx + 2 < len(parts):
+                    repos.add(f"{parts[idx+1]}/{parts[idx+2]}")
+
+        enrichment_context += f"""
+
+GitHub Analysis:
+- Analyzed {num_files} Python files across {len(repos)} repositories
+- Repositories: {', '.join(sorted(repos))}
+- Detailed analysis saved in .dxtr/github_summary.json
+"""
+
+    enrichment_context += """
+
+Please create an enriched profile that:
+1. Preserves all information from the original profile
+2. Incorporates insights from the GitHub analysis (if available)
+3. Maintains a professional, concise format
+4. Focuses on demonstrable skills and experience
+"""
+
+    print("[Calling LLM to enrich profile...]")
+
+    response = chat(
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a technical profile enrichment assistant. Create clear, professional profiles that highlight demonstrable skills and experience."
+            },
+            {
+                "role": "user",
+                "content": enrichment_context
+            }
+        ],
+        options={
+            "temperature": 0.3,
+            "num_ctx": 16384,
+        }
+    )
+
+    enriched_profile = response.message.content.strip()
+
+    # Save enriched profile
+    output_path = dxtr_dir / "dxtr_profile.md"
+    output_path.write_text(enriched_profile)
+
+    print(f"\n[✓] Enriched profile saved to .dxtr/dxtr_profile.md")
+    print(f"[✓] Profile initialization complete\n")
+
+    # Echo the profile back to the user
+    print("=" * 80)
+    print("DXTR PROFILE")
+    print("=" * 80 + "\n")
+    print(enriched_profile)
+    print("\n" + "=" * 80 + "\n")
 
     return str(output_path)

@@ -18,7 +18,7 @@ def cmd_chat(args):
     print()
 
     # Check for user profile on startup
-    profile_path = Path(".dxtr/profile_enriched.md")
+    profile_path = Path(".dxtr/dxtr_profile.md")
 
     if not profile_path.exists():
         print("No user profile found. Starting profile creation...\n")

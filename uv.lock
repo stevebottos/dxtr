@@ -55,7 +55,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dxtr-agent"
+name = "dxtr-cli"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

@@ -6,8 +6,94 @@ Provides functionality to clone and cache GitHub repositories.
 
 import subprocess
 import re
+import shutil
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+
+
+def is_profile_url(url: str) -> bool:
+    """
+    Check if a GitHub URL is a profile (not a repository).
+
+    Args:
+        url: GitHub URL
+
+    Returns:
+        bool: True if it's a profile URL (e.g., github.com/username)
+    """
+    # Profile URLs have format: github.com/username (no additional path)
+    # Repo URLs have format: github.com/username/repo
+    pattern = r'github\.com/([^/]+)/?$'
+    return bool(re.search(pattern, url))
+
+
+def fetch_profile_html(url: str) -> str | None:
+    """
+    Fetch raw HTML from a GitHub profile URL.
+
+    Args:
+        url: The GitHub profile URL to fetch
+
+    Returns:
+        Raw HTML string or None if failed
+    """
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (DXTR Profile Agent)'}
+        req = urllib.request.Request(url, headers=headers)
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            content_bytes = response.read()
+            content_type = response.headers.get('Content-Type', '')
+
+            # Try to detect encoding
+            encoding = 'utf-8'
+            if 'charset=' in content_type:
+                encoding = content_type.split('charset=')[-1].split(';')[0].strip()
+
+            try:
+                html = content_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                html = content_bytes.decode('utf-8', errors='ignore')
+
+            return html
+
+    except Exception as e:
+        print(f"  [Error fetching profile HTML: {e}]")
+        return None
+
+
+def extract_pinned_repos(html_content: str) -> list[str]:
+    """
+    Extract pinned repository URLs from a GitHub profile page HTML.
+
+    Args:
+        html_content: Raw HTML from GitHub profile page
+
+    Returns:
+        List of full repository URLs
+    """
+    # GitHub pinned repos have data-hydro-click with "target":"PINNED_REPO"
+    # Pattern: look for links with PINNED_REPO in data-hydro-click and extract href
+    pattern = r'data-hydro-click="[^"]*PINNED_REPO[^"]*"[^>]*href="(/[^/"]+/[^/"]+)"'
+
+    # Also try the reverse order (href before data-hydro-click)
+    pattern_reverse = r'href="(/[^/"]+/[^/"]+)"[^>]*data-hydro-click="[^"]*PINNED_REPO[^"]*"'
+
+    repos = []
+    seen = set()
+
+    # Try both patterns
+    for patt in [pattern, pattern_reverse]:
+        matches = re.findall(patt, html_content)
+        for match in matches:
+            # match is like: /username/repo-name
+            if match not in seen and match.count('/') == 2:  # Ensure it's /owner/repo format
+                full_url = f"https://github.com{match}"
+                repos.append(full_url)
+                seen.add(match)
+
+    return repos
 
 
 def _parse_repo_url(url: str) -> tuple[str, str] | None:
@@ -69,8 +155,8 @@ def is_repo_cloned(url: str) -> tuple[bool, Path | None]:
     owner, repo = parsed
     repo_path = _get_repo_path(owner, repo)
 
-    # Check if directory exists and contains .git
-    if repo_path.exists() and (repo_path / ".git").exists():
+    # Check if directory exists (no need to check for .git since we remove it)
+    if repo_path.exists() and repo_path.is_dir():
         return True, repo_path
 
     return False, repo_path
@@ -79,6 +165,9 @@ def is_repo_cloned(url: str) -> tuple[bool, Path | None]:
 def clone_repo(url: str) -> dict[str, any]:
     """
     Clone a GitHub repository to .dxtr/repos/.
+
+    Uses shallow clone (--depth 1) and removes .git directory after cloning
+    to save space. Only source code is kept, no git history.
 
     Uses caching - if the repo is already cloned, returns success without re-cloning.
 
@@ -138,6 +227,11 @@ def clone_repo(url: str) -> dict[str, any]:
         )
 
         if result.returncode == 0:
+            # Remove .git directory to save space (we don't need git history)
+            git_dir = repo_path / ".git"
+            if git_dir.exists():
+                shutil.rmtree(git_dir)
+
             return {
                 "success": True,
                 "path": str(repo_path),
