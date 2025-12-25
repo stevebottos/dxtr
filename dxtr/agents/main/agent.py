@@ -10,8 +10,9 @@ from pathlib import Path
 from ollama import chat
 
 # Model to use for this agent
-MODEL = "mistral-nemo"
+# MODEL = "mistral-nemo"
 # MODEL = "nemotron-3-nano"
+MODEL = "gemma3:12b"
 
 
 def _load_system_prompt(prompt_name="chat"):

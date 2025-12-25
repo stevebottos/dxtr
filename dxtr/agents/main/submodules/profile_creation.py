@@ -13,9 +13,9 @@ import json
 import re
 from pathlib import Path
 from ollama import chat
-from ..agent import MODEL
-from ..tools import git_tools
-from . import github_explorer
+from ..agent import MODEL, _load_system_prompt
+from ...git_helper import agent as git_helper
+from ...git_helper.tools import git_tools
 
 
 def _extract_github_profile_url(profile_content: str) -> str | None:
@@ -44,122 +44,16 @@ def _analyze_github_repos(github_url: str) -> dict[str, str]:
     """
     Scrape, clone, and analyze GitHub pinned repositories.
 
+    Delegates to the git_helper agent.
+
     Args:
         github_url: GitHub profile URL
 
     Returns:
         Dict mapping file paths to JSON analysis strings
     """
-    print(f"\n[Fetching GitHub profile: {github_url}]")
-
-    # Fetch profile HTML
-    html = git_tools.fetch_profile_html(github_url)
-    if not html:
-        print("  [Failed to fetch profile HTML]")
-        return {}
-
-    # Extract pinned repos
-    pinned_repos = git_tools.extract_pinned_repos(html)
-
-    # Filter out dxtr-cli
-    pinned_repos = [repo for repo in pinned_repos if not repo.endswith('/dxtr-cli')]
-
-    if not pinned_repos:
-        print("  [No pinned repositories found]")
-        return {}
-
-    print(f"  [Found {len(pinned_repos)} pinned repository(ies)]")
-
-    # Clone repos
-    print(f"\n[Cloning repositories...]")
-    clone_results = []
-    for repo_url in pinned_repos:
-        result = git_tools.clone_repo(repo_url)
-        clone_results.append(result)
-
-        if result["success"]:
-            status = "✓ cached" if "cached" in result["message"].lower() else "✓ cloned"
-            print(f"  [{status}] {result['owner']}/{result['repo']}")
-        else:
-            print(f"  [✗ failed] {result['url']}: {result['message']}")
-
-    # Analyze repos
-    successful = [r for r in clone_results if r["success"]]
-    if not successful:
-        print("  [No repositories to analyze]")
-        return {}
-
-    print(f"\n[Analyzing {len(successful)} repository(ies)...]")
-
-    github_summary = {}
-
-    for result in successful:
-        repo_path = Path(result["path"])
-        print(f"  [Analyzing {result['owner']}/{result['repo']}...]")
-
-        # Find Python files
-        python_files = github_explorer.find_python_files(repo_path)
-
-        if not python_files:
-            print(f"    [No Python files found]")
-            continue
-
-        print(f"    [Found {len(python_files)} Python file(s)]")
-
-        # Analyze each file
-        for idx, py_file in enumerate(python_files, 1):
-            rel_path = py_file.relative_to(repo_path)
-            print(f"    [{idx}/{len(python_files)}] {rel_path}", end=" ", flush=True)
-
-            try:
-                source_code = py_file.read_text(encoding='utf-8')
-                file_size_kb = len(source_code) / 1024
-
-                # LLM analysis
-                response = chat(
-                    model=github_explorer.ANALYSIS_MODEL,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": """Assess this Python module for relevant experience, technologies, techniques, and implementations.
-
-Focus on:
-- Specific libraries/frameworks used (e.g., "torch.nn", "transformers", "scann")
-- Modern techniques present or absent (e.g., "ROPE", "flash attention", "KV caching")
-- Implementation patterns (e.g., "custom attention", "CUDA kernels", "NumPy-based")
-- Architectural approaches (e.g., "encoder-decoder", "transformer", "CNN")
-
-Output:
-1. Comprehensive list of keywords (technical terms, libraries, techniques)
-2. Brief module-level summary (2-3 sentences)"""
-                        },
-                        {
-                            "role": "user",
-                            "content": source_code
-                        }
-                    ],
-                    options={
-                        "temperature": 0.3,
-                        "num_ctx": 16384,
-                    },
-                    format=github_explorer.MODULE_ANALYSIS_SCHEMA
-                )
-
-                # Store the JSON string (matching embed_github_repo.py)
-                github_summary[str(py_file)] = response.message.content
-
-                # Show token counts
-                prompt_tokens = response.get("prompt_eval_count", 0)
-                completion_tokens = response.get("eval_count", 0)
-                print(f"({file_size_kb:.1f}KB, {prompt_tokens + completion_tokens} tokens)")
-
-            except Exception as e:
-                print(f"[ERROR: {str(e)}]")
-                continue
-
-    print(f"\n  [✓] Analyzed {len(github_summary)} file(s) total")
-
-    return github_summary
+    # Delegate to git_helper agent
+    return git_helper.run(github_url)
 
 
 def run():
@@ -226,7 +120,8 @@ def run():
     print("=" * 80 + "\n")
 
     # Build context for enrichment
-    enrichment_context = f"""Original profile:
+    enrichment_context = f"""# Original Profile
+
 {profile_content}
 """
 
@@ -244,29 +139,27 @@ def run():
 
         enrichment_context += f"""
 
-GitHub Analysis:
-- Analyzed {num_files} Python files across {len(repos)} repositories
-- Repositories: {', '.join(sorted(repos))}
-- Detailed analysis saved in .dxtr/github_summary.json
-"""
+# GitHub Analysis Summary
 
-    enrichment_context += """
-
-Please create an enriched profile that:
-1. Preserves all information from the original profile
-2. Incorporates insights from the GitHub analysis (if available)
-3. Maintains a professional, concise format
-4. Focuses on demonstrable skills and experience
+- **Files analyzed**: {num_files} Python files
+- **Repositories**: {len(repos)} repositories
+  - {chr(10).join([f'  - {repo}' for repo in sorted(repos)])}
+- **Detailed analysis**: Available in .dxtr/github_summary.json
 """
+    else:
+        enrichment_context += "\n# GitHub Analysis Summary\n\nNo GitHub profile found or no repositories analyzed.\n"
 
     print("[Calling LLM to enrich profile...]")
+
+    # Load system prompt
+    system_prompt = _load_system_prompt("profile_creation")
 
     response = chat(
         model=MODEL,
         messages=[
             {
                 "role": "system",
-                "content": "You are a technical profile enrichment assistant. Create clear, professional profiles that highlight demonstrable skills and experience."
+                "content": system_prompt
             },
             {
                 "role": "user",
