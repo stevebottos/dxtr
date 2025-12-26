@@ -7,32 +7,57 @@ The main agent has:
 """
 
 from pathlib import Path
-from ollama import chat
-
-# Model to use for this agent
-MODEL = "mistral-nemo"
-# MODEL = "nemotron-3-nano"
-# MODEL = "gemma3:12b"
+from dxtr.base import Agent
+from dxtr.config import config
 
 
-def _load_system_prompt(prompt_name="chat"):
-    """
-    Load a system prompt from the prompts directory.
+class MainAgent(Agent):
+    """Main agent for chat and coordination."""
 
-    Args:
-        prompt_name: Name of the prompt file (without .md extension)
-                    Options: "chat", "profile_creation", etc.
+    def __init__(self):
+        """Initialize main agent."""
+        model_config = config.get_model_config("main")
+        super().__init__(
+            name="main",
+            model=model_config.name,
+            prompts_dir=Path(__file__).parent / "prompts",
+            default_options={
+                "temperature": model_config.temperature,
+                "num_ctx": model_config.context_window,
+            }
+        )
 
-    Returns:
-        str: The system prompt content
-    """
-    prompt_path = Path(__file__).parent / "prompts" / f"{prompt_name}.md"
-    return prompt_path.read_text().strip()
+    def chat_with_agent(self, messages, prompt_name="chat", stream=True, **options):
+        """
+        Chat with the main agent using the specified prompt.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            prompt_name: Which system prompt to use ("chat", "profile_creation", etc.)
+            stream: Whether to stream the response (default: True)
+            **options: Additional options to pass to the chat function
+
+        Returns:
+            Generator of chat response chunks if stream=True, otherwise the full response
+        """
+        return self.chat(
+            messages=messages,
+            prompt_name=prompt_name,
+            stream=stream,
+            use_tools=False,
+            **options
+        )
+
+
+# Global instance for backward compatibility
+_agent = MainAgent()
 
 
 def chat_with_agent(messages, prompt_name="chat", stream=True, **options):
     """
     Chat with the main agent using the specified prompt.
+
+    This is a convenience function that delegates to the agent instance.
 
     Args:
         messages: List of message dicts with 'role' and 'content'
@@ -43,21 +68,4 @@ def chat_with_agent(messages, prompt_name="chat", stream=True, **options):
     Returns:
         Generator of chat response chunks if stream=True, otherwise the full response
     """
-    # Default options
-    default_options = {
-        "temperature": 0.3,
-        "num_ctx": 4096 * 4,  # 16384 context window
-    }
-    default_options.update(options)
-
-    # Prepend system message if not already present
-    if not messages or messages[0].get("role") != "system":
-        system_prompt = _load_system_prompt(prompt_name)
-        messages = [{"role": "system", "content": system_prompt}] + messages
-
-    return chat(
-        model=MODEL,
-        messages=messages,
-        stream=stream,
-        options=default_options,
-    )
+    return _agent.chat_with_agent(messages, prompt_name, stream, **options)

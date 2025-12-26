@@ -89,6 +89,7 @@ class PapersHelperAgent(Agent):
                 "id": paper.get("id"),
                 "title": paper.get("title"),
                 "upvotes": paper.get("upvotes", 0),
+                "summary": paper.get("summary", ""),
             })
 
         user_prompt = f"""# User Context
@@ -103,7 +104,8 @@ class PapersHelperAgent(Agent):
 
 Rank these papers from 1-5 (where 5 is most relevant) based on the user's profile and interests. For each paper, provide:
 - Relevance score (1-5)
-- Brief reasoning (1-2 sentences explaining why it's relevant or not)
+- Brief reasoning (2-3 sentences explaining why it's relevant or not)
+- **IMPORTANT**: Include a direct quote from the paper's summary/abstract to support your reasoning
 
 Format your response as a ranked list, starting with the most relevant papers."""
 

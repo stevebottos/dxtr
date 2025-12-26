@@ -178,28 +178,52 @@ def cmd_chat(args):
                 "create_profile": profile_tools.create_profile,
             }
 
-            # Get response from agent with tools
+            # Get response from agent with tools (streaming)
             main_config = config.get_model_config("main")
-            response = chat(
+            print("DXTR: ", end="", flush=True)
+
+            response_text = ""
+            tool_calls = None
+
+            response_stream = chat(
                 model=main_config.name,
                 messages=chat_history,
                 tools=tools,
+                stream=True,
                 options={
                     "temperature": main_config.temperature,
                     "num_ctx": main_config.context_window,
                 }
             )
 
-            # Handle tool calls if any
-            if response.message.tool_calls:
-                chat_history.append(response.message)
+            # Stream response and check for tool calls
+            for chunk in response_stream:
+                if hasattr(chunk.message, "content") and chunk.message.content:
+                    content = chunk.message.content
+                    response_text += content
+                    print(content, end="", flush=True)
 
-                for tool_call in response.message.tool_calls:
+                # Tool calls come in the final chunk
+                if hasattr(chunk.message, "tool_calls") and chunk.message.tool_calls:
+                    tool_calls = chunk.message.tool_calls
+
+            # Handle tool calls if any
+            if tool_calls:
+                print("\n")  # New line after initial response
+
+                # Add message to history
+                chat_history.append({
+                    "role": "assistant",
+                    "content": response_text,
+                    "tool_calls": tool_calls
+                })
+
+                for tool_call in tool_calls:
                     function_name = tool_call.function.name
                     function_args = tool_call.function.arguments
 
                     if function_name in available_functions:
-                        print(f"\n[Calling {function_name}...]")
+                        print(f"[Calling {function_name}...]")
                         function_result = available_functions[function_name](**function_args)
 
                         # Format tool result for better model understanding
@@ -221,23 +245,23 @@ def cmd_chat(args):
                             "content": tool_content
                         })
 
-                # Get final response after tool call
-                print("DXTR: ", end="", flush=True)
+                # Get final response after tool call (streaming)
+                print("\nDXTR: ", end="", flush=True)
+                response_text = ""
                 final_response = chat(
                     model=main_config.name,
                     messages=chat_history,
+                    stream=True,
                     options={
                         "temperature": main_config.temperature,
                         "num_ctx": main_config.context_window,
                     }
                 )
-                response_text = final_response.message.content
-                print(response_text)
-            else:
-                # No tool calls, regular response
-                print("DXTR: ", end="", flush=True)
-                response_text = response.message.content
-                print(response_text)
+                for chunk in final_response:
+                    if hasattr(chunk.message, "content") and chunk.message.content:
+                        content = chunk.message.content
+                        response_text += content
+                        print(content, end="", flush=True)
 
             del main_config
 

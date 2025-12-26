@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ModelConfig:
     """Configuration for a specific agent's model."""
+
     name: str
     temperature: float = 0.3
     context_window: int = 16384
@@ -24,6 +25,7 @@ class ModelConfig:
 @dataclass
 class PathConfig:
     """Paths used throughout DXTR."""
+
     dxtr_dir: Path = Path(".dxtr")
     repos_dir: Path = Path(".dxtr/repos")
     papers_dir: Path = Path(".dxtr/hf_papers")
@@ -37,28 +39,30 @@ class Config:
     """Main DXTR configuration."""
 
     # Model configurations per agent
-    models: dict[str, ModelConfig] = field(default_factory=lambda: {
-        "main": ModelConfig(
-            name="mistral-nemo",
-            temperature=0.3,
-            context_window=16384,
-        ),
-        "profile_creator": ModelConfig(
-            name="gemma3:12b",
-            temperature=0.3,
-            context_window=16384,
-        ),
-        "git_helper": ModelConfig(
-            name="qwen2.5-coder",
-            temperature=0.3,
-            context_window=16384,
-        ),
-        "papers_helper": ModelConfig(
-            name="nemotron-mini",
-            temperature=0.3,
-            context_window=16384,
-        ),
-    })
+    models: dict[str, ModelConfig] = field(
+        default_factory=lambda: {
+            "main": ModelConfig(
+                name="mistral-nemo",
+                temperature=0.3,
+                context_window=16384,
+            ),
+            "profile_creator": ModelConfig(
+                name="gemma3:12b",
+                temperature=0.3,
+                context_window=16384,
+            ),
+            "git_helper": ModelConfig(
+                name="qwen2.5-coder",
+                temperature=0.3,
+                context_window=16384,
+            ),
+            "papers_helper": ModelConfig(
+                name="gemma3:12b",
+                temperature=0.1,
+                context_window=16384,
+            ),
+        }
+    )
 
     # Paths
     paths: PathConfig = field(default_factory=PathConfig)

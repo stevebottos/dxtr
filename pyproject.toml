@@ -18,3 +18,9 @@ test = [
 
 [project.scripts]
 dxtr = "dxtr.cli:main"
+
+[tool.setuptools]
+packages = ["dxtr"]
+
+[tool.setuptools.package-data]
+dxtr = ["**/*.md"]
