@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
@@ -192,6 +193,8 @@ def cmd_chat(args):
             response_text = ""
             tool_calls = None
 
+            # Start timing
+            start_time = time.time()
             response_stream = chat(
                 model=main_config.name,
                 messages=chat_history,
@@ -213,6 +216,10 @@ def cmd_chat(args):
                 # Tool calls come in the final chunk
                 if hasattr(chunk.message, "tool_calls") and chunk.message.tool_calls:
                     tool_calls = chunk.message.tool_calls
+
+            # End timing
+            elapsed_time = time.time() - start_time
+            print(f"\n[DEBUG: Initial chat() call took {elapsed_time:.2f}s]")
 
             # Handle tool calls if any
             if tool_calls:
@@ -255,6 +262,9 @@ def cmd_chat(args):
                 # Get final response after tool call (streaming)
                 print("\nDXTR: ", end="", flush=True)
                 response_text = ""
+
+                # Start timing for final response
+                final_start_time = time.time()
                 final_response = chat(
                     model=main_config.name,
                     messages=chat_history,
@@ -269,6 +279,10 @@ def cmd_chat(args):
                         content = chunk.message.content
                         response_text += content
                         print(content, end="", flush=True)
+
+                # End timing for final response
+                final_elapsed_time = time.time() - final_start_time
+                print(f"\n[DEBUG: Final chat() call took {final_elapsed_time:.2f}s]")
 
             del main_config
 
