@@ -9,6 +9,9 @@ dependencies = [
     "ollama>=0.6.1",
     "requests>=2.32.5",
     "docker>=7.0.0",
+    "llama-index>=0.9.0",
+    "llama-index-llms-ollama>=0.1.0",
+    "llama-index-embeddings-ollama>=0.1.0",
 ]
 
 [project.optional-dependencies]

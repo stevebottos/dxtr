@@ -1,6 +1,10 @@
 """
 Git Helper Agent
 
+INTERNAL HELPER - NOT A USER-FACING TOOL
+This agent is called programmatically by the profile_creator agent.
+It has no TOOL_DEFINITION and is not exposed to the main chat agent.
+
 Handles GitHub repository analysis:
 1. Scrapes pinned repos from GitHub profiles
 2. Clones repositories

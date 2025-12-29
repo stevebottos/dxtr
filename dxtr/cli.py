@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import time
 from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
@@ -9,6 +8,7 @@ from ollama import chat
 from .config import config
 from .agents.papers_helper.tools import paper_tools
 from .agents.profile_creator.tools import profile_tools
+from .agents.deep_research.tools import deep_research_tools
 from .papers_etl import run_etl
 
 
@@ -180,10 +180,12 @@ def cmd_chat(args):
             tools = [
                 paper_tools.TOOL_DEFINITION,
                 profile_tools.TOOL_DEFINITION,
+                deep_research_tools.TOOL_DEFINITION,
             ]
             available_functions = {
                 "rank_papers": paper_tools.rank_papers,
                 "create_profile": profile_tools.create_profile,
+                "deep_research": deep_research_tools.deep_research,
             }
 
             # Get response from agent with tools (streaming)
@@ -193,8 +195,6 @@ def cmd_chat(args):
             response_text = ""
             tool_calls = None
 
-            # Start timing
-            start_time = time.time()
             response_stream = chat(
                 model=main_config.name,
                 messages=chat_history,
@@ -216,10 +216,6 @@ def cmd_chat(args):
                 # Tool calls come in the final chunk
                 if hasattr(chunk.message, "tool_calls") and chunk.message.tool_calls:
                     tool_calls = chunk.message.tool_calls
-
-            # End timing
-            elapsed_time = time.time() - start_time
-            print(f"\n[DEBUG: Initial chat() call took {elapsed_time:.2f}s]")
 
             # Handle tool calls if any
             if tool_calls:
@@ -249,6 +245,8 @@ def cmd_chat(args):
                                 # Reload context after profile creation
                                 user_context = _load_user_context()
                                 chat_history[0] = {"role": "system", "content": user_context}
+                            elif function_name == "deep_research":
+                                tool_content = f"Deep research answer for paper {function_result['paper_id']}:\n\n{function_result['answer']}"
                             else:
                                 tool_content = json.dumps(function_result)
                         else:
@@ -263,8 +261,6 @@ def cmd_chat(args):
                 print("\nDXTR: ", end="", flush=True)
                 response_text = ""
 
-                # Start timing for final response
-                final_start_time = time.time()
                 final_response = chat(
                     model=main_config.name,
                     messages=chat_history,
@@ -279,10 +275,6 @@ def cmd_chat(args):
                         content = chunk.message.content
                         response_text += content
                         print(content, end="", flush=True)
-
-                # End timing for final response
-                final_elapsed_time = time.time() - final_start_time
-                print(f"\n[DEBUG: Final chat() call took {final_elapsed_time:.2f}s]")
 
             del main_config
 

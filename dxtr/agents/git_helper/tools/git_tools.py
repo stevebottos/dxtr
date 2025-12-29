@@ -1,6 +1,9 @@
 """
 Git Tools Module
 
+NOTE: These are utility functions, NOT Ollama function calling tools.
+No TOOL_DEFINITION exists for these - they are called directly by the git_helper agent.
+
 Provides functionality to clone and cache GitHub repositories.
 """
 

@@ -25,6 +25,10 @@ from io import BytesIO
 import docker
 from docker.errors import NotFound, APIError
 
+from llama_index.core import Document, VectorStoreIndex
+from llama_index.core.node_parser import MarkdownNodeParser
+from llama_index.embeddings.ollama import OllamaEmbedding
+
 from dxtr.config import config
 from dxtr.util import get_daily_papers
 
@@ -152,16 +156,16 @@ class DoclingService:
             time.sleep(1)
         return False
 
-    def convert_pdf(self, pdf_path: Path, timeout: int = 300) -> str:
+    def convert_pdf(self, pdf_path: Path, timeout: int = 300) -> dict:
         """
-        Convert a PDF to markdown using the service
+        Convert a PDF to markdown and LlamaIndex format using the service
 
         Args:
             pdf_path: Path to PDF file
             timeout: Request timeout in seconds
 
         Returns:
-            Markdown content as string
+            Dict with 'markdown' and 'llama_index_data' keys
         """
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -175,7 +179,10 @@ class DoclingService:
 
         response.raise_for_status()
         result = response.json()
-        return result["markdown"]
+        return {
+            "markdown": result["markdown"],
+            "docling_json": result.get("docling_json")
+        }
 
 
 class PapersETL:
@@ -195,10 +202,14 @@ class PapersETL:
     def _managed_service(self):
         """Context manager for Docling service lifecycle"""
         try:
+            print("=" * 80)
             if not self.docling.start():
                 raise RuntimeError("Failed to start Docling service")
+            print()
             yield self.docling
         finally:
+            print()
+            print("=" * 80)
             self.docling.stop()
 
     def run(self, date: str = None, max_papers: int = None):
@@ -213,10 +224,7 @@ class PapersETL:
         if date is None:
             date = datetime.now().strftime("%Y-%m-%d")
 
-        print("=" * 80)
         print(f"Papers ETL Pipeline - {date}")
-        print("=" * 80)
-        print()
 
         # Step 1: Start Docling service
         with self._managed_service() as docling:
@@ -230,15 +238,13 @@ class PapersETL:
 
             print(f"  ✓ Downloaded {len(papers)} paper(s)\n")
 
-            # Step 3: Convert PDFs to markdown
-            print(f"Converting PDFs to markdown...")
+            # Step 3: Convert PDFs to markdown + build indices
+            print(f"Processing papers...")
             self._convert_papers(papers, docling)
 
         # Service automatically stopped via context manager
         print()
-        print("=" * 80)
         print("Pipeline complete")
-        print("=" * 80)
 
     def _download_papers(self, date: str, max_papers: int = None) -> list[Path]:
         """Download papers and return list of PDF paths"""
@@ -257,7 +263,7 @@ class PapersETL:
         return pdf_files
 
     def _convert_papers(self, pdf_files: list[Path], docling: DoclingService):
-        """Convert all PDFs to markdown"""
+        """Convert all PDFs to markdown and LlamaIndex format"""
         successful = 0
         failed = 0
         skipped = 0
@@ -265,23 +271,58 @@ class PapersETL:
         for idx, pdf_path in enumerate(pdf_files, 1):
             paper_id = pdf_path.parent.name
             md_path = pdf_path.parent / "paper.md"
+            layout_path = pdf_path.parent / "layout.json"
+            index_dir = pdf_path.parent / "paper.index"
 
             # Skip if already processed
-            if md_path.exists():
+            if md_path.exists() and layout_path.exists() and index_dir.exists():
                 print(f"  [{idx}/{len(pdf_files)}] {paper_id}: Already processed")
                 skipped += 1
                 continue
 
-            print(f"  [{idx}/{len(pdf_files)}] {paper_id}: Converting...", end=" ", flush=True)
+            print(f"  [{idx}/{len(pdf_files)}] {paper_id}:")
 
             try:
-                # Convert PDF to markdown
-                markdown = docling.convert_pdf(pdf_path, timeout=300)
+                # Step 1: Convert PDF to markdown + layout JSON
+                print(f"    Converting to markdown...", end=" ", flush=True)
+                result = docling.convert_pdf(pdf_path, timeout=600)
 
-                # Save markdown
-                md_path.write_text(markdown, encoding="utf-8")
+                md_path.write_text(result["markdown"], encoding="utf-8")
 
+                import json
+                layout_path.write_text(
+                    json.dumps(result["docling_json"], indent=2),
+                    encoding="utf-8"
+                )
                 print("✓")
+
+                # Step 2: Build index from markdown (no docling needed on host)
+                print(f"    Building index:")
+                document = Document(text=result["markdown"])
+
+                print(f"      Parsing nodes...", end=" ", flush=True)
+                # Use SentenceSplitter with reasonable chunk size for embeddings
+                from llama_index.core.node_parser import SentenceSplitter
+                node_parser = SentenceSplitter(
+                    chunk_size=1024,  # ~750 tokens, well under 8k limit
+                    chunk_overlap=128
+                )
+                nodes = node_parser.get_nodes_from_documents([document])
+                print(f"{len(nodes)} nodes")
+
+                print(f"      Generating embeddings...", flush=True)
+                embed_model = OllamaEmbedding(model_name="nomic-embed-text")
+
+                index = VectorStoreIndex(
+                    nodes,
+                    embed_model=embed_model,
+                    show_progress=True
+                )
+
+                print(f"      Persisting...", end=" ", flush=True)
+                index.storage_context.persist(persist_dir=str(index_dir))
+                print("✓")
+
                 successful += 1
 
             except requests.exceptions.HTTPError as e:

@@ -121,9 +121,15 @@ async def convert_pdf(
         buf = BytesIO(pdf_content)
         source = DocumentStream(name=file.filename, stream=buf)
 
-        # Convert PDF to markdown
+        # Convert PDF
         result = converter.convert(source)
+
+        # Export to markdown (for debugging)
         markdown_content = result.document.export_to_markdown()
+
+        # Export to Docling's JSON format for LlamaIndex
+        # This provides lossless representation of document structure
+        docling_json = result.document.export_to_dict()
 
         # Get metadata
         num_pages = len(result.document.pages) if hasattr(result.document, 'pages') else None
@@ -133,6 +139,7 @@ async def convert_pdf(
                 "success": True,
                 "filename": file.filename,
                 "markdown": markdown_content,
+                "docling_json": docling_json,  # Docling's JSON format for LlamaIndex
                 "metadata": {
                     "num_pages": num_pages,
                     "size_bytes": len(pdf_content),
