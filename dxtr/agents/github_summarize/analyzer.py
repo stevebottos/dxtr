@@ -16,6 +16,26 @@ MODULE_ANALYSIS_SCHEMA = {
     "required": ["keywords", "summary"],
 }
 
+# JSON schema for verification of generated summaries
+VERIFICATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keywords_score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+        },
+        "keywords_issues": {"type": "array", "items": {"type": "string"}},
+        "summary_score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+        },
+        "summary_issues": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["keywords_score", "summary_score"],
+}
+
 
 def find_python_files(repo_path: Path, max_files: int = 100) -> list[Path]:
     """
