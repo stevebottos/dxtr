@@ -1,5 +1,5 @@
 """Profile Manager Agent - GitHub analysis and profile creation."""
 
-from .agent import ProfileManagerAgent
+from .agent import Agent
 
-__all__ = ["ProfileManagerAgent"]
+__all__ = ["Agent"]

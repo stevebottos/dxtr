@@ -24,7 +24,7 @@ class MainAgent(Agent):
             default_options={
                 "temperature": model_config.temperature,
                 "num_ctx": model_config.context_window,
-            }
+            },
         )
 
     def chat_with_agent(self, messages, prompt_name="chat", stream=True, **options):
@@ -45,7 +45,7 @@ class MainAgent(Agent):
             prompt_name=prompt_name,
             stream=stream,
             use_tools=False,
-            **options
+            **options,
         )
 
 

@@ -10,6 +10,8 @@ import sys
 
 # Official Qwen Coder AWQ model (4-bit, ~4-5GB VRAM)
 MODEL = "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ"
+# MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+
 PORT = "30000"
 
 print(f"Starting SGLang with {MODEL} (4-bit AWQ) on port {PORT}...")

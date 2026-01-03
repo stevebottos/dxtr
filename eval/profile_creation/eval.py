@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-Profile Manager Agent Evaluation
-
-Runs profile_manager agent using profile.md, saves outputs, and verifies quality.
-
-Usage: python eval/profile_manager/eval.py
+Evaluates the quality of the created profile per github_summarize -> profile_synthesize
 """
 
 import sys
@@ -15,7 +11,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from dxtr.agents.profile_manager.agent import ProfileManagerAgent
+from dxtr.agents import github_summarize, profile_synthesize
 
 
 def run_eval():
@@ -34,13 +30,15 @@ def run_eval():
         print("Create profile.md in project root with your info and GitHub URL")
         sys.exit(1)
 
-    agent = ProfileManagerAgent()
+    print("Summarizing git repos...")
+    agent = github_summarize.Agent()
+    github_summary = agent.run(profile_path, output_dir=eval_dir)
 
-    # === GENERATION PHASE ===
-    print("=" * 60)
-    print("PHASE 1: GENERATION")
-    print("=" * 60)
+    print("Synthesizing profile from summarized repos...")
+    agent = profile_synthesize.Agent()
+    agent.run(profile_path, output_dir=eval_dir, additional_context=str(github_summary))
 
+    exit()
     enriched_profile = agent.create_profile(profile_path, output_dir=eval_dir)
 
     # Save profile output
@@ -66,7 +64,9 @@ def run_eval():
 
     # Load verification prompt from eval directory
     verification_prompt = Path(__file__).parent / "prompt.md"
-    verification_results = agent.verify_github_summary(github_summary, verification_prompt)
+    verification_results = agent.verify_github_summary(
+        github_summary, verification_prompt
+    )
 
     # Save verification results
     verification_file = eval_dir / "verification_results.json"
@@ -93,7 +93,10 @@ def run_eval():
     issues = []
     for file_path, result in verification_results["file_results"].items():
         if isinstance(result, dict) and "error" not in result:
-            if result.get("keywords_score", 5) < 4 or result.get("summary_score", 5) < 4:
+            if (
+                result.get("keywords_score", 5) < 4
+                or result.get("summary_score", 5) < 4
+            ):
                 issues.append((file_path, result))
 
     if issues:
@@ -103,8 +106,12 @@ def run_eval():
         for file_path, result in issues[:5]:  # Show first 5
             short_path = "/".join(Path(file_path).parts[-3:])
             print(f"\n{short_path}")
-            print(f"  Keywords: {result.get('keywords_score', '?')}/5 - {result.get('keywords_issues', [])}")
-            print(f"  Summary:  {result.get('summary_score', '?')}/5 - {result.get('summary_issues', [])}")
+            print(
+                f"  Keywords: {result.get('keywords_score', '?')}/5 - {result.get('keywords_issues', [])}"
+            )
+            print(
+                f"  Summary:  {result.get('summary_score', '?')}/5 - {result.get('summary_issues', [])}"
+            )
 
     print(f"\nFull results saved: {verification_file}")
 

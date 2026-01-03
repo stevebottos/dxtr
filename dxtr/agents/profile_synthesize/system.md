@@ -48,6 +48,9 @@ Create a clear, concise markdown document structured as:
 ```markdown
 # User Profile (Internal)
 
+## User Provided
+[Your selected content from the user's provided profile]
+
 ## Background
 [Brief summary of who they are, their experience level]
 
