@@ -1,25 +1,21 @@
 """
-Profile Manager Agent
+Profile Synthesize Agent
 
-Analyzes GitHub repositories and creates enriched user profiles using SGLang.
-Task-focused agent with no conversational elements.
+Creates enriched user profiles from GitHub analysis data using SGLang.
 """
 
-import re
 from pathlib import Path
 import sglang as sgl
-import json
 
 from dxtr.config_v2 import config
 from dxtr.agents.base import BaseAgent
-from . import util
 
 
 class Agent(BaseAgent):
-    """Agent for GitHub analysis and profile creation using SGLang."""
+    """Agent for synthesizing enriched profiles from GitHub analysis."""
 
     def __init__(self):
-        """Initialize profile manager agent with SGLang backend."""
+        """Initialize profile synthesize agent."""
         super().__init__()
         self.temperature = config.agents.profile_manager_temperature
         self.max_tokens = config.agents.profile_manager_max_tokens
@@ -69,8 +65,6 @@ class Agent(BaseAgent):
         )
 
         result = final_state["enriched_profile"].strip()
-
-        print(result)
 
         summary_file = output_dir / "profile.md"
         summary_file.write_text(result)
