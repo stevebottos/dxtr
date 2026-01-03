@@ -5,30 +5,25 @@ description = "A personalized ML research assistant"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "huggingface-hub>=1.2.3",
-    "ollama>=0.6.1",
-    "requests>=2.32.5",
-    "docker>=7.0.0",
-    "llama-index>=0.9.0",
-    "llama-index-llms-ollama>=0.1.0",
-    "llama-index-embeddings-ollama>=0.1.0",
-    "sglang>=0.5.2",
-    "openai>=2.14.0",
-    "pybase64>=1.4.3",
-    "orjson>=3.11.5",
-    "uvicorn>=0.40.0",
-    "uvloop>=0.22.1",
-    "fastapi>=0.128.0",
-    "torch>=2.9.1",
-    "psutil>=7.2.1",
-    "zmq>=0.0.0",
+  "huggingface-hub>=1.2.3",
+  "ollama>=0.6.1",
+  "requests>=2.32.5",
+  "docker>=7.0.0",
+  "llama-index>=0.9.0",
+  "llama-index-llms-ollama>=0.1.0",
+  "sglang>=0.5.2",
+  "pybase64>=1.4.3",
+  "orjson>=3.11.5",
+  "uvicorn>=0.40.0",
+  "uvloop>=0.22.1",
+  "fastapi>=0.128.0",
+  "torch>=2.9.1",
+  "psutil>=7.2.1",
+  "zmq>=0.0.0",
 ]
 
 [project.optional-dependencies]
-test = [
-    "pytest>=7.0.0",
-    "pytest-mock>=3.0.0",
-]
+test = ["pytest>=7.0.0", "pytest-mock>=3.0.0"]
 
 [project.scripts]
 dxtr = "dxtr.cli:main"

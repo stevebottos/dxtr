@@ -424,10 +424,8 @@ dependencies = [
     { name = "fastapi" },
     { name = "huggingface-hub" },
     { name = "llama-index" },
-    { name = "llama-index-embeddings-ollama" },
     { name = "llama-index-llms-ollama" },
     { name = "ollama" },
-    { name = "openai" },
     { name = "orjson" },
     { name = "psutil" },
     { name = "pybase64" },
@@ -451,10 +449,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "huggingface-hub", specifier = ">=1.2.3" },
     { name = "llama-index", specifier = ">=0.9.0" },
-    { name = "llama-index-embeddings-ollama", specifier = ">=0.1.0" },
     { name = "llama-index-llms-ollama", specifier = ">=0.1.0" },
     { name = "ollama", specifier = ">=0.6.1" },
-    { name = "openai", specifier = ">=2.14.0" },
     { name = "orjson", specifier = ">=3.11.5" },
     { name = "psutil", specifier = ">=7.2.1" },
     { name = "pybase64", specifier = ">=1.4.3" },
@@ -1000,20 +996,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6b/77/a1aa39cca5b32e3801f28e877add27c9c0daf4b3dc087ac9f31df53337b5/llama_index_core-0.14.10.tar.gz", hash = "sha256:b930aac3161a5e145f4003e81ba94cbef062228a0d3ef39752e03471b0cb386b", size = 11582499, upload-time = "2025-12-04T19:45:24.093Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/fa/98618331a22f8fedd050af0a0096916fdcec39bbff82bdd8ae7693536866/llama_index_core-0.14.10-py3-none-any.whl", hash = "sha256:ea0d563c777a7209664594588e3f0885a4784a1ae39dddaa28526867c79a3d65", size = 11925643, upload-time = "2025-12-04T19:45:21.585Z" },
-]
-
-[[package]]
-name = "llama-index-embeddings-ollama"
-version = "0.8.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "llama-index-core" },
-    { name = "ollama" },
-    { name = "pytest-asyncio" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/16/2ed8eeb739788da1a12420546f39549168291936650a1f84056283330c03/llama_index_embeddings_ollama-0.8.5.tar.gz", hash = "sha256:5184b72f6463109a1d3c5d72eacff808449d7bc191a959a196b9471c049687b8", size = 4180, upload-time = "2025-12-19T03:25:15.153Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/ec/d2c5102bceb0e0c8340313bf3fe6b6dc321e07ba803b010f51064e385d7b/llama_index_embeddings_ollama-0.8.5-py3-none-any.whl", hash = "sha256:d67ebbeadc2fd437f4fae83aa525d9b25a5f65a11f92256c85b8b5b72516807d", size = 3759, upload-time = "2025-12-19T03:25:15.999Z" },
 ]
 
 [[package]]
@@ -2206,19 +2188,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d1/db/7ef3487e0fb0049ddb5ce41d3a49c235bf9ad299b6a25d5780a89f19230f/pytest-9.0.2.tar.gz", hash = "sha256:75186651a92bd89611d1d9fc20f0b4345fd827c41ccd5c299a868a05d70edf11", size = 1568901, upload-time = "2025-12-06T21:30:51.014Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3b/ab/b3226f0bd7cdcf710fbede2b3548584366da3b19b5021e74f5bde2a8fa3f/pytest-9.0.2-py3-none-any.whl", hash = "sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b", size = 374801, upload-time = "2025-12-06T21:30:49.154Z" },
-]
-
-[[package]]
-name = "pytest-asyncio"
-version = "1.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pytest" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/35/f8b19922b6a25bc0880171a2f1a003eaeb93657475193ab516fd87cac9da/pytest_asyncio-1.3.0-py3-none-any.whl", hash = "sha256:611e26147c7f77640e6d0a92a38ed17c3e9848063698d5c93d5aa7aa11cebff5", size = 15075, upload-time = "2025-11-10T16:07:45.537Z" },
 ]
 
 [[package]]

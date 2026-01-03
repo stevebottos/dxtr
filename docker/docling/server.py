@@ -1,12 +1,13 @@
 """
 Docling PDF to Markdown Conversion Service
 
-A FastAPI-based HTTP service that converts PDF files to Markdown format.
-Accepts PDF files as bytes and returns markdown content.
+A FastAPI-based HTTP service that converts PDF files to Markdown format
+and generates embeddings for text chunks.
 
 Endpoints:
 ----------
 POST /convert - Convert a PDF file to markdown
+POST /embed - Generate embeddings for text chunks
 GET /health - Health check endpoint
 GET / - API documentation
 """
@@ -19,6 +20,8 @@ from io import BytesIO
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.base_models import InputFormat, DocumentStream
 from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -62,15 +65,41 @@ converter = DocumentConverter(
     }
 )
 
+# Embedding model configuration
+EMBED_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"  # 8192 token context, 768 dims
+embed_model = None  # Lazy load on first request
+
+
+def get_embed_model():
+    """Lazy load embedding model on first use"""
+    global embed_model
+    if embed_model is None:
+        print(f"Loading embedding model: {EMBED_MODEL_NAME}")
+        embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME, trust_remote_code=True)
+    return embed_model
+
+
+class EmbedRequest(BaseModel):
+    """Request body for embedding generation"""
+    texts: list[str]
+
+
+class EmbedResponse(BaseModel):
+    """Response body for embedding generation"""
+    embeddings: list[list[float]]
+    model: str
+    dimension: int
+
 
 @app.get("/")
 async def root():
     """API information and usage instructions"""
     return {
         "service": "Docling PDF to Markdown Converter",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "endpoints": {
             "POST /convert": "Convert PDF to Markdown",
+            "POST /embed": "Generate embeddings for text chunks",
             "GET /health": "Health check",
             "GET /docs": "Interactive API documentation"
         },
@@ -78,7 +107,8 @@ async def root():
             "backend": PDF_BACKEND,
             "ocr_enabled": DO_OCR,
             "table_structure": DO_TABLE_STRUCTURE,
-            "image_scale": IMAGES_SCALE
+            "image_scale": IMAGES_SCALE,
+            "embed_model": EMBED_MODEL_NAME
         }
     }
 
@@ -152,6 +182,45 @@ async def convert_pdf(
         raise HTTPException(
             status_code=500,
             detail=f"Error converting PDF: {str(e)}"
+        )
+
+
+@app.post("/embed", response_model=EmbedResponse)
+async def embed_texts(request: EmbedRequest):
+    """
+    Generate embeddings for a list of text chunks
+
+    Args:
+        request: JSON body with 'texts' field containing list of strings
+
+    Returns:
+        JSON response with embeddings and metadata
+
+    Example:
+        curl -X POST "http://localhost:8080/embed" \\
+             -H "Content-Type: application/json" \\
+             -d '{"texts": ["Hello world", "Another text"]}'
+    """
+    if not request.texts:
+        raise HTTPException(
+            status_code=400,
+            detail="texts field cannot be empty"
+        )
+
+    try:
+        model = get_embed_model()
+        embeddings = model.get_text_embedding_batch(request.texts)
+
+        return EmbedResponse(
+            embeddings=embeddings,
+            model=EMBED_MODEL_NAME,
+            dimension=len(embeddings[0]) if embeddings else 0
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating embeddings: {str(e)}"
         )
 
 

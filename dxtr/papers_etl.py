@@ -27,7 +27,6 @@ from docker.errors import NotFound, APIError
 
 from llama_index.core import Document, VectorStoreIndex
 from llama_index.core.node_parser import MarkdownNodeParser
-from llama_index.embeddings.ollama import OllamaEmbedding
 
 from dxtr.config import config
 from dxtr.util import get_daily_papers
@@ -181,8 +180,30 @@ class DoclingService:
         result = response.json()
         return {
             "markdown": result["markdown"],
-            "docling_json": result.get("docling_json")
+            "docling_json": result.get("docling_json"),
         }
+
+    def generate_embeddings(
+        self, texts: list[str], timeout: int = 300
+    ) -> list[list[float]]:
+        """
+        Generate embeddings for a list of text chunks
+
+        Args:
+            texts: List of text strings to embed
+            timeout: Request timeout in seconds
+
+        Returns:
+            List of embedding vectors
+        """
+        response = requests.post(
+            f"{self.base_url}/embed",
+            json={"texts": texts},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        result = response.json()
+        return result["embeddings"]
 
 
 class PapersETL:
@@ -223,7 +244,6 @@ class PapersETL:
         # Default to today
         if date is None:
             date = datetime.now().strftime("%Y-%m-%d")
-
         print(f"Papers ETL Pipeline - {date}")
 
         # Step 1: Start Docling service
@@ -290,9 +310,9 @@ class PapersETL:
                 md_path.write_text(result["markdown"], encoding="utf-8")
 
                 import json
+
                 layout_path.write_text(
-                    json.dumps(result["docling_json"], indent=2),
-                    encoding="utf-8"
+                    json.dumps(result["docling_json"], indent=2), encoding="utf-8"
                 )
                 print("✓")
 
@@ -303,21 +323,28 @@ class PapersETL:
                 print(f"      Parsing nodes...", end=" ", flush=True)
                 # Use SentenceSplitter with reasonable chunk size for embeddings
                 from llama_index.core.node_parser import SentenceSplitter
+
                 node_parser = SentenceSplitter(
                     chunk_size=1024,  # ~750 tokens, well under 8k limit
-                    chunk_overlap=128
+                    chunk_overlap=128,
                 )
                 nodes = node_parser.get_nodes_from_documents([document])
                 print(f"{len(nodes)} nodes")
 
-                print(f"      Generating embeddings...", flush=True)
-                embed_model = OllamaEmbedding(model_name="nomic-embed-text")
+                # Generate embeddings via docker service
+                print(f"      Generating embeddings...", end=" ", flush=True)
+                texts = [node.get_content() for node in nodes]
+                embeddings = docling.generate_embeddings(texts)
 
-                index = VectorStoreIndex(
-                    nodes,
-                    embed_model=embed_model,
-                    show_progress=True
-                )
+                # Assign embeddings to nodes
+                for node, embedding in zip(nodes, embeddings):
+                    node.embedding = embedding
+                print("✓")
+
+                # Build index with pre-computed embeddings (no embed_model needed)
+                print(f"      Creating index...", end=" ", flush=True)
+                index = VectorStoreIndex(nodes, embed_model=None)
+                print("✓")
 
                 print(f"      Persisting...", end=" ", flush=True)
                 index.storage_context.persist(persist_dir=str(index_dir))

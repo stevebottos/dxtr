@@ -16,7 +16,6 @@ from pathlib import Path
 
 from llama_index.core import StorageContext, load_index_from_storage
 from llama_index.llms.ollama import Ollama
-from llama_index.embeddings.ollama import OllamaEmbedding
 from ollama import chat
 
 from dxtr.config import config
@@ -67,10 +66,9 @@ class DeepResearchAgent:
         if not index_dir.exists():
             return f"Index not found for paper {paper_id}. Run 'dxtr get-papers' to build it."
 
+        # TODO: Load index created by docker service (needs embed_model for queries)
         print(f"  [Agent] Loading index...")
-        embed_model = OllamaEmbedding(model_name="nomic-embed-text")
-        storage_context = StorageContext.from_defaults(persist_dir=str(index_dir))
-        index = load_index_from_storage(storage_context, embed_model=embed_model)
+        raise NotImplementedError("Index loading needs embed_model - refactor to use docker service")
         total_chunks = len(index.docstore.docs)
         print(f"  [Agent] Index loaded ({total_chunks} chunks)")
 

@@ -7,7 +7,8 @@ from datetime import datetime
 from ollama import chat
 from .config import config
 from .agents.papers_helper.tools import paper_tools
-from .agents.profile_creator.tools import profile_tools
+
+# from .agents.profile_creator.tools import profile_tools
 from .agents.deep_research.tools import deep_research_tools
 from .papers_etl import run_etl
 
@@ -203,7 +204,7 @@ def cmd_chat(args):
                 options={
                     "temperature": main_config.temperature,
                     "num_ctx": main_config.context_window,
-                }
+                },
             )
 
             # Stream response and check for tool calls
@@ -222,11 +223,13 @@ def cmd_chat(args):
                 print("\n")  # New line after initial response
 
                 # Add message to history
-                chat_history.append({
-                    "role": "assistant",
-                    "content": response_text,
-                    "tool_calls": tool_calls
-                })
+                chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": response_text,
+                        "tool_calls": tool_calls,
+                    }
+                )
 
                 for tool_call in tool_calls:
                     function_name = tool_call.function.name
@@ -234,7 +237,9 @@ def cmd_chat(args):
 
                     if function_name in available_functions:
                         print(f"[Calling {function_name}...]")
-                        function_result = available_functions[function_name](**function_args)
+                        function_result = available_functions[function_name](
+                            **function_args
+                        )
 
                         # Format tool result for better model understanding
                         if function_result.get("success"):
@@ -244,7 +249,10 @@ def cmd_chat(args):
                                 tool_content = f"Successfully created profile at {function_result['profile_path']}. User context has been updated."
                                 # Reload context after profile creation
                                 user_context = _load_user_context()
-                                chat_history[0] = {"role": "system", "content": user_context}
+                                chat_history[0] = {
+                                    "role": "system",
+                                    "content": user_context,
+                                }
                             elif function_name == "deep_research":
                                 tool_content = f"Deep research answer for paper {function_result['paper_id']}:\n\n{function_result['answer']}"
                             else:
@@ -252,10 +260,7 @@ def cmd_chat(args):
                         else:
                             tool_content = f"Error: {function_result.get('error', 'Unknown error')}"
 
-                        chat_history.append({
-                            "role": "tool",
-                            "content": tool_content
-                        })
+                        chat_history.append({"role": "tool", "content": tool_content})
 
                 # Tool output already streamed - no need for main agent to synthesize
                 print("\n[Tool complete - added to context]\n")
@@ -287,19 +292,19 @@ def main():
     # dxtr get-papers command
     parser_get_papers = subparsers.add_parser(
         "get-papers",
-        help="Download and process daily papers (starts Docling service automatically)"
+        help="Download and process daily papers (starts Docling service automatically)",
     )
     parser_get_papers.add_argument(
         "--date",
         type=str,
         default=None,
-        help="Date in YYYY-MM-DD format (default: today)"
+        help="Date in YYYY-MM-DD format (default: today)",
     )
     parser_get_papers.add_argument(
         "--max-papers",
         type=int,
         default=None,
-        help="Maximum number of papers to process (default: all)"
+        help="Maximum number of papers to process (default: all)",
     )
     parser_get_papers.set_defaults(func=cmd_get_papers)
 
