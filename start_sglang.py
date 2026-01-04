@@ -33,19 +33,19 @@ cmd = [
     "32768",  # 32K context window for paper analysis
 ]
 
-# vram_optimization_args = [
-#     "--mem-fraction-static",
-#     "0.7",  # Leaves 30% room for memory spikes and OS
-#     "--max-running-requests",
-#     "2",  # ONLY process 2 files at a time to save VRAM
-#     "--chunked-prefill-size",
-#     "1024",  # Process long files in small chunks to avoid OOM
-#     "--schedule-policy",
-#     "lpm",  # Longest Prompt Match: prioritizes files that share prefixes
-#     # "--enable-prefix-caching",  # Essential: Keeps your system prompt 'hot' in VRAM
-# ]
-#
-# cmd.extend(vram_optimization_args)
+vram_optimization_args = [
+    #     "--mem-fraction-static",
+    #     "0.7",  # Leaves 30% room for memory spikes and OS
+    "--max-running-requests",
+    "8",  # ONLY process 2 files at a time to save VRAM
+    #     "--chunked-prefill-size",
+    #     "1024",  # Process long files in small chunks to avoid OOM
+    #     "--schedule-policy",
+    #     "lpm",  # Longest Prompt Match: prioritizes files that share prefixes
+    #     # "--enable-prefix-caching",  # Essential: Keeps your system prompt 'hot' in VRAM
+]
+
+cmd.extend(vram_optimization_args)
 try:
     subprocess.run(cmd, check=True)
 except KeyboardInterrupt:

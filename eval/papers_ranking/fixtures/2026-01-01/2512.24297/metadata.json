@@ -1,0 +1,6 @@
+{
+  "id": "2512.24297",
+  "title": "Figure It Out: Improving the Frontier of Reasoning with Active Visual Thinking",
+  "summary": "Complex reasoning problems often involve implicit spatial, geometric, and structural relationships that are not explicitly encoded in text. While recent reasoning models have achieved strong performance across many domains, purely text-based reasoning struggles to represent global structural constraints in complex settings. In this paper, we introduce FIGR, which integrates active visual thinking into multi-turn reasoning via end-to-end reinforcement learning. FIGR externalizes intermediate structural hypotheses by constructing visual representations during problem solving. By adaptively regulating when and how visual reasoning should be invoked, FIGR enables more stable and coherent reasoning over global structural properties that are difficult to capture from text alone. Experiments on challenging mathematical reasoning benchmarks demonstrate that FIGR outperforms strong text-only chain-of-thought baselines. In particular, FIGR improves the base model by 13.12% on AIME 2025 and 11.00% on BeyondAIME, highlighting the effectiveness of figure-guided multimodal reasoning in enhancing the stability and reliability of complex reasoning.",
+  "upvotes": 5
+}

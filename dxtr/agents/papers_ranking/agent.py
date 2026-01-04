@@ -2,9 +2,7 @@
 Papers Ranking Agent
 
 Ranks research papers by relevance to user profile and interests.
-Uses a map-reduce pattern:
-1. Map: Score each paper individually (parallel)
-2. Reduce: Aggregate scores and produce final ranking
+Uses run_batch to parallelize across papers, with forked reasoning per paper.
 """
 
 import json
@@ -16,7 +14,6 @@ from dxtr.agents.base import BaseAgent
 from dxtr.config_v2 import config
 
 
-# Tool definition for main chat agent
 TOOL_DEFINITION = {
     "type": "function",
     "function": {
@@ -39,40 +36,140 @@ TOOL_DEFINITION = {
     },
 }
 
+# Schema for scoring a single paper
+SINGLE_PAPER_SCORE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "score": {"type": "integer"},
+        "reason": {"type": "string"},
+    },
+    "required": ["score", "reason"],
+}
+
+# Schema for critic adjustments
+CRITIC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "adjustments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "original_score": {"type": "integer"},
+                    "adjusted_score": {"type": "integer"},
+                    "issue": {"type": "string"},
+                },
+                "required": ["id", "original_score", "adjusted_score", "issue"],
+            },
+        },
+    },
+    "required": ["adjustments"],
+}
+
+# Evaluation criteria for Tree of Thought (3 branches that merge)
+TOT_CRITERIA = [
+    ("relevance", "How relevant is this paper to the user's stated interests?"),
+    ("practical", "What practical value does this paper have for the user's work?"),
+    (
+        "alignment",
+        "Does this paper align with topics the user has expressed interest in?",
+    ),
+]
+
 
 class Agent(BaseAgent):
-    """Agent for ranking research papers using SGLang."""
+    """Paper ranking with run_batch parallelization and forked reasoning per paper."""
 
     def __init__(self):
         super().__init__()
-        self.temperature = config.agents.papers_helper_temperature
-        self.max_tokens = config.agents.papers_helper_max_tokens
-        self.prompts_dir = Path(__file__).parent
-        self.score_prompt = self.load_system_prompt(self.prompts_dir / "score.md")
-        self.rank_prompt = self.load_system_prompt(self.prompts_dir / "rank.md")
+        # self.score_prompt = self.load_system_prompt(self.prompts_dir / "score.md")
+        # self.rank_prompt = self.load_system_prompt(self.prompts_dir / "rank.md")
+        # self.critic_prompt = self.load_system_prompt(self.prompts_dir / "critic.md")
+        # self.system_prompt = self.load_system_prompt(
+        #     Path(__file__).parent / "system.md"
+        # )
+        self.system_prompt = (
+            None  # Being explicit here. System prompts are created on the fly.
+        )
 
     @staticmethod
     @sgl.function
-    def score_paper_func(s, user_message, system_prompt, max_tokens, temp, num_forks=3):
-        """Score a single paper with forked reasoning paths for self-consistency."""
-        s += sgl.system(system_prompt)
-        s += sgl.user(user_message)
+    def score_all_papers_tot(s, user_context, papers, system_prompt, criteria):
+        """Score all papers using Tree of Thought.
 
-        # Fork into multiple reasoning paths from shared prefix
-        forks = s.fork(num_forks)
-        for i, f in enumerate(forks):
-            f += sgl.assistant(
-                sgl.gen(f"score_{i}", max_tokens=max_tokens, temperature=temp)
+        Architecture:
+        - Base context: system prompt + user profile (shared, ~400 tokens)
+        - Fork per paper: each adds just abstract (~300 tokens)
+        - Fork per criterion: 3 criteria evaluated in parallel
+        - MERGE: Fork outputs merged back, final score sees all reasoning
+
+        This is true ToT - the final decision sees the parallel explorations.
+        """
+        # Shared base context - cached via radix
+        s += sgl.system(system_prompt)
+        s += sgl.user(f"# User Profile\n\n{user_context}\n\n---\n\n")
+
+        # Fork once per paper
+        paper_forks = s.fork(len(papers))
+
+        for pi, pf in enumerate(paper_forks):
+            paper = papers[pi]
+            # Each paper fork adds just the abstract
+            pf += sgl.user(
+                f"# Paper to Evaluate\n\n"
+                f"**{paper.get('id')}**: {paper.get('title')}\n"
+                f"Upvotes: {paper.get('upvotes', 0)}\n\n"
+                f"{paper.get('summary', 'No abstract.')}"
             )
+
+            # Fork into criteria branches (Tree of Thought)
+            forks = pf.fork(len(criteria))
+            for f, (name, question) in zip(forks, criteria):
+                f += sgl.assistant(question + " ")
+                f += sgl.gen(name, max_tokens=150, temperature=0.0, stop="\n\n")
+
+            # MERGE: Fork outputs back into main context
+            pf += sgl.assistant("Based on my analysis:\n")
+            for f, (name, _) in zip(forks, criteria):
+                pf += f"- {name.title()}: " + f[name] + "\n"
+
+            # Final score generation sees all merged reasoning
+            pf += "\nFinal assessment: "
+            pf += sgl.gen(
+                "final_score",
+                max_tokens=200,
+                temperature=0.0,
+                json_schema=json.dumps(SINGLE_PAPER_SCORE_SCHEMA),
+            )
+
+        # Collect final scores from paper forks
+        for pi, pf in enumerate(paper_forks):
+            s[f"paper_{pi}_score"] = pf["final_score"]
+
+        s["num_papers"] = len(papers)
 
     @staticmethod
     @sgl.function
     def rank_papers_func(s, user_message, system_prompt, max_tokens, temp):
-        """Aggregate scores and produce final ranking."""
+        """Produce final ranking from aggregated scores."""
+        s += sgl.system(system_prompt)
+        s += sgl.user(user_message)
+        s += sgl.assistant(sgl.gen("ranking", max_tokens=max_tokens, temperature=temp))
+
+    @staticmethod
+    @sgl.function
+    def critic_func(s, user_message, system_prompt):
+        """Review scores and reasoning, suggest adjustments for factual errors."""
         s += sgl.system(system_prompt)
         s += sgl.user(user_message)
         s += sgl.assistant(
-            sgl.gen("ranking", max_tokens=max_tokens, temperature=temp)
+            sgl.gen(
+                "critique",
+                max_tokens=2000,
+                temperature=0.0,
+                json_schema=json.dumps(CRITIC_SCHEMA),
+            )
         )
 
     def _load_papers(self, date: str, papers_dir: Path = None) -> list[dict]:
@@ -99,9 +196,9 @@ class Agent(BaseAgent):
 
         return papers
 
-    def _build_score_message(self, user_context: str, paper: dict) -> str:
-        """Build message for scoring a single paper."""
-        return f"""# User Profile & Interests
+    def _build_single_paper_context(self, user_context: str, paper: dict) -> str:
+        """Build context for a single paper evaluation."""
+        return f"""# User Profile
 
 {user_context}
 
@@ -109,39 +206,138 @@ class Agent(BaseAgent):
 
 # Paper to Evaluate
 
-ID: {paper.get('id')}
-Title: {paper.get('title')}
-Upvotes: {paper.get('upvotes', 0)}
+**{paper.get("id")}**: {paper.get("title")}
+Upvotes: {paper.get("upvotes", 0)}
 
-Abstract:
-{paper.get('summary', 'No abstract available.')}"""
+{paper.get("summary", "No abstract.")}"""
 
-    def _build_rank_message(
-        self, user_context: str, user_query: str, paper_scores: list[dict]
-    ) -> str:
-        """Build message for final ranking aggregation."""
-        scores_text = "\n\n---\n\n".join([
-            f"**Paper ID: {ps['id']}**\n"
-            f"Title: {ps['title']}\n\n"
-            f"Individual Assessment:\n{ps['score']}"
-            for ps in paper_scores
-        ])
+    def _build_critic_context(self, user_context: str, results: dict) -> str:
+        """Build context for the critic to review all scores and reasoning."""
+        lines = [
+            "# User Profile",
+            "",
+            user_context,
+            "",
+            "---",
+            "",
+            "# Scored Papers",
+            "",
+        ]
 
-        return f"""# User's Question
+        for paper_id, data in results.items():
+            lines.append(f"## {paper_id}: {data['title']}")
+            lines.append(f"Score: {data['score']}/5")
+            reason = data.get("reason", "")
+            if reason:
+                lines.append(f"Reasoning: {reason}")
+            lines.append("")
 
-"{user_query}"
+        return "\n".join(lines)
 
----
+    def _apply_critic_adjustments(
+        self, results: dict, adjustments: list, verbose: bool
+    ) -> dict:
+        """Apply critic adjustments to scores."""
+        for adj in adjustments:
+            paper_id = adj.get("id")
+            if paper_id in results:
+                old_score = results[paper_id]["score"]
+                new_score = adj.get("adjusted_score")
+                issue = adj.get("issue", "")
 
-# User Profile Summary
+                if verbose:
+                    print(f"  CRITIC: {paper_id} {old_score} -> {new_score}: {issue}")
 
-{user_context[:2000]}  # Truncated for reduce step
+                results[paper_id]["score"] = new_score
+                results[paper_id]["critic_adjusted"] = True
+                results[paper_id]["critic_issue"] = issue
 
----
+        return results
 
-# Individual Paper Assessments
+    def _aggregate_fork_scores(self, state, num_forks: int, upvotes: int = 0) -> dict:
+        """Aggregate scores from forks for a single paper, with upvote boost."""
+        scores = []
+        reasons = []
 
-{scores_text}"""
+        for i in range(num_forks):
+            try:
+                output = json.loads(state[f"fork_{i}"])
+                scores.append(int(output["score"]))
+                reasons.append(output.get("reason", ""))
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+        if not scores:
+            return {"score": None, "scores": [], "reasons": [], "boosted": False}
+
+        avg_score = int(round(sum(scores) / len(scores)))
+
+        # Apply upvote boost: 100+ upvotes = 5, 50+ upvotes = at least 4
+        boosted = False
+        if upvotes >= 100:
+            if avg_score < 5:
+                avg_score = 5
+                boosted = True
+        elif upvotes >= 50:
+            if avg_score < 4:
+                avg_score = 4
+                boosted = True
+
+        return {
+            "score": avg_score,
+            "scores": scores,
+            "reasons": reasons,
+            "boosted": boosted,
+        }
+
+    @staticmethod
+    @sgl.function
+    def _rank_papers_pre(s, user_context, paper, max_tokens, temp):
+        """SGLang function for the final profile enrichment step."""
+        s += sgl.system(
+            f"The following is a comprehensive profile of the current user. You are a research agent, and must decide whether a research paper is relevant, given this profile: {user_context}."
+        )
+        s += sgl.user(f"The paper info: {paper}")
+
+        forks = s.fork(3)
+        upvotes = paper["upvotes"]
+        # Define different 'personas' or 'strategies' for each fork
+        forks[0] += sgl.user(
+            "Think step-by-step: what about the user's profile makes this paper relevant? Be specific."
+        )
+        forks[1] += sgl.user(
+            "Is this paper domain specific? Is there any reference to this domain in the user's profile?"
+        )
+        forks[2] += sgl.user(
+            "Not all papers can be read, there is limited time in the day. If I had 10 papers to read this week, would I fast track this one?"
+        )
+
+        # Generate reasoning for all forks in parallel
+        for i, f in enumerate(forks):
+            f += sgl.gen(f"reasoning_{i}", max_tokens=max_tokens, temperature=temp)
+
+        # Optional: Join them back to make a final decision
+        # We pick the first fork's state to continue, but we can access all
+        s += sgl.user(
+            f"""Based on the reasoning above, give a final 1-5 score, where 5 is most relevant, and provide your reasoning. The rubric is as follows:
+            5 - Very relevant, prioritize this paper, read it today
+            4 - Relevant, read this paper this week
+            3 - Read this paper if there are no 4/5 scoring ones in the reading list
+            2 - This paper is most likely irrelevant, read it if you are curious 
+            1 - This paper is definitely irrelevant, save your time
+            
+            Note that a 5 score is prestigious. There needs to be a very valid reason to assign a 5. Assume that this is one paper out of 20 that you need to rank, 
+            and not all should get 5's. Some 5's are really 4's.
+            As a final check, consider the number of upvotes. This paper has {upvotes} upvotes. If it has more than 100, this is an automatic 5."""
+        )
+        s += sgl.gen(
+            "soft_score",
+            max_tokens=max_tokens,
+            temperature=temp,
+            json_schema=json.dumps(SINGLE_PAPER_SCORE_SCHEMA),
+            frequency_penalty=1.1,
+            presence_penalty=0.1,
+        )
 
     def run(
         self,
@@ -149,53 +345,108 @@ Abstract:
         user_context: str,
         user_query: str,
         papers_dir: Path = None,
+        verbose: bool = True,
     ) -> dict:
         """
-        Rank papers using map-reduce pattern.
-
-        1. Map: Score each paper individually (parallel)
-        2. Reduce: Aggregate and produce final ranking
+        Rank papers using run_batch parallelization with forked reasoning per paper.
         """
         papers = self._load_papers(date, papers_dir)
-
         if not papers:
             return {"error": f"No papers found for {date}"}
 
-        # === MAP PHASE: Score each paper in parallel ===
-        batch_data = []
-        for paper in papers:
-            batch_data.append({
-                "user_message": self._build_score_message(user_context, paper),
-                "system_prompt": self.score_prompt,
-                "max_tokens": self.max_tokens,
-                "temp": self.temperature,
-            })
-
-        states = self.score_paper_func.run_batch(
-            batch_data, num_threads=len(papers), progress_bar=True
+        mt = 250
+        temp = 0.1
+        batch_data = [
+            {
+                "user_context": user_context,
+                "paper": p,
+                "max_tokens": mt,
+                "temp": temp,
+            }
+            for p in papers
+        ]
+        states = self._rank_papers_pre.run_batch(
+            batch_data, num_threads=128, progress_bar=True
         )
 
-        # Collect scores
-        paper_scores = []
+        results = []
         for i, state in enumerate(states):
-            paper_scores.append({
-                "id": papers[i].get("id"),
-                "title": papers[i].get("title"),
-                "score": state["score"],
-            })
+            score = state["soft_score"]
+            print(score)
 
-        # === REDUCE PHASE: Aggregate and rank ===
-        rank_message = self._build_rank_message(user_context, user_query, paper_scores)
-
-        rank_state = self.rank_papers_func.run(
-            user_message=rank_message,
-            system_prompt=self.rank_prompt,
-            max_tokens=self.max_tokens,
-            temp=self.temperature,
+        exit()
+        state = self._rank_papers_pre.run(
+            user_context=user_context,
+            papers=papers,
+            system_prompt=self.score_prompt,
+            criteria=TOT_CRITERIA,
         )
+
+        # Extract results from ToT structure
+        results = {}
+
+        for pi, paper in enumerate(papers):
+            paper_id = paper.get("id")
+            upvotes = paper.get("upvotes", 0)
+
+            try:
+                output = json.loads(state[f"paper_{pi}_score"])
+                score = int(output["score"])
+                reason = output.get("reason", "")
+            except (json.JSONDecodeError, KeyError, TypeError):
+                score = None
+                reason = ""
+
+            # Apply upvote boost
+            boosted = False
+            if score is not None:
+                if upvotes >= 100 and score < 5:
+                    score = 5
+                    boosted = True
+                elif upvotes >= 50 and score < 4:
+                    score = 4
+                    boosted = True
+
+            results[paper_id] = {
+                "title": paper.get("title"),
+                "score": score,
+                "reason": reason,
+                "boosted": boosted,
+            }
+
+            if verbose:
+                boost_tag = " [BOOSTED]" if boosted else ""
+                print(f"\n{paper_id}: {score}/5{boost_tag}")
+                print(f"  Title: {paper.get('title', '')[:60]}")
+                print(f"  Reason: {reason[:100]}{'...' if len(reason) > 100 else ''}")
+
+        # Sort by score descending
+        sorted_results = dict(
+            sorted(results.items(), key=lambda x: x[1]["score"] or 0, reverse=True)
+        )
+
+        if verbose:
+            print(f"\n{'=' * 60}")
+            print("FINAL RANKING")
+            print(f"{'=' * 60}")
+            for pid, data in sorted_results.items():
+                boost_tag = " [BOOST]" if data.get("boosted") else ""
+                print(f"{data['score']}/5 - {pid}: {data['title'][:50]}{boost_tag}")
+
+        # Return in format compatible with eval
+        individual_scores = [
+            {
+                "id": pid,
+                "title": data["title"],
+                "final_score": data["score"],
+                "reason": data.get("reason", ""),
+                "boosted": data.get("boosted", False),
+            }
+            for pid, data in sorted_results.items()
+        ]
 
         return {
             "paper_count": len(papers),
-            "individual_scores": paper_scores,
-            "final_ranking": rank_state["ranking"],
+            "individual_scores": individual_scores,
+            "scores": {pid: data["score"] for pid, data in sorted_results.items()},
         }

@@ -183,9 +183,7 @@ class DoclingService:
             "docling_json": result.get("docling_json"),
         }
 
-    def generate_embeddings(
-        self, texts: list[str], timeout: int = 300
-    ) -> list[list[float]]:
+    def generate_embeddings(self, texts: list[str], timeout: int = 300) -> list[list[float]]:
         """
         Generate embeddings for a list of text chunks
 
