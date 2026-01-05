@@ -1,133 +1,165 @@
 {
-  "description": "Ground truth rankings for 2026-01-01 papers based on user profile: CV/few-shot, small LLMs, multimodal, agentic, compute efficiency",
+  "description": "Ground truth rankings for 2026-01-01 papers based on user profile: CV/few-shot, small LLMs (12GB VRAM constraint), multimodal, agentic. Focus on efficiency and 'solutions architect' + 'researcher' goals.",
   "rankings": [
     {
       "id": "2512.24618",
       "title": "Youtu-LLM: Unlocking the Native Agentic Potential for Lightweight Large Language Models",
       "score": 5,
-      "key_match": "small LLMs + agentic (direct hit on two interests)"
+      "acceptable_range": [5, 5],
+      "key_match": "Perfect fit: Small LLM (1.96B fits 12GB), Agentic, Training from scratch (research interest).",
+      "reasoning": "Directly addresses the user's compute constraint (12GB VRAM) while targeting their key learning goal (Agentic LLMs). The 'from scratch' training provides the deep research insight they want."
     },
     {
       "id": "2512.24873",
       "title": "Let It Flow: Agentic Crafting on Rock and Roll, Building the ROME Model",
       "score": 5,
-      "key_match": "agentic LLM development"
+      "acceptable_range": [4, 5],
+      "key_match": "Agentic Ecosystem + Open Source",
+      "reasoning": "Strong match for 'Agentic LLM Development' learning goal. The 'open agentic learning ecosystem' is practical for a solutions architect."
     },
     {
       "id": "2512.22905",
       "title": "JavisGPT: A Unified Multi-modal LLM for Sounding-Video Comprehension",
       "score": 5,
-      "key_match": "multimodal LLM"
+      "acceptable_range": [4, 5],
+      "key_match": "Unified Multimodal (Audio-Video-LLM)",
+      "reasoning": "Hits the 'Multimodal applications' and 'fine tune models across modalities' goals perfectly. Unified architecture is a key interest."
     },
     {
       "id": "2512.24097",
       "title": "Factorized Learning for Temporally Grounded Video-Language Models",
       "score": 5,
-      "key_match": "multimodal (video-language)"
+      "acceptable_range": [4, 5],
+      "key_match": "Video-Language + Grounding",
+      "reasoning": "Specific CV+LLM intersection problem (temporal grounding). Highly relevant to 'Multimodal applications' specialization."
     },
     {
       "id": "2512.24297",
       "title": "Figure It Out: Improving Reasoning with Active Visual Thinking",
       "score": 5,
-      "key_match": "multimodal reasoning"
+      "acceptable_range": [4, 5],
+      "key_match": "Visual Reasoning / Multimodal CoT",
+      "reasoning": "Integrates 'visual thinking' into reasoning, bridging the user's strong CV background with their interest in LLM reasoning."
     },
     {
       "id": "2512.24385",
       "title": "Forging Spatial Intelligence: Multi-Modal Data Pre-Training",
       "score": 4,
       "acceptable_range": [4, 5],
-      "key_match": "multimodal (autonomous systems focused)"
+      "key_match": "Multimodal Pre-training / Autonomous",
+      "reasoning": "Strong technical match for 'multimodal' and 'pre-training'. Slightly more autonomous-systems focused, but 'Spatial Intelligence' is very relevant."
     },
     {
       "id": "2512.23343",
       "title": "AI Meets Brain: Memory Systems for Autonomous Agents",
       "score": 4,
       "acceptable_range": [3, 4],
-      "key_match": "agentic development (memory systems)"
-    },
-    {
-      "id": "2512.23988",
-      "title": "Fantastic Reasoning Behaviors: Unsupervised Discovery of Reasoning",
-      "score": 4,
-      "acceptable_range": [3, 4],
-      "key_match": "LLM development (reasoning)"
+      "key_match": "Agent Memory / Neuroscience",
+      "reasoning": "Good conceptual overview for the 'Agentic LLM Development' learning goal, though less code-focused than others."
     },
     {
       "id": "2512.23851",
       "title": "Pretraining Frame Preservation in Video Memory Compression",
       "score": 4,
       "acceptable_range": [3, 4],
-      "key_match": "compute efficiency + video"
-    },
-    {
-      "id": "2512.24551",
-      "title": "PhyGDPO: Physics-Aware Text-to-Video Generation",
-      "score": 4,
-      "acceptable_range": [3, 4],
-      "key_match": "video generation (CV adjacent)"
-    },
-    {
-      "id": "2512.24885",
-      "title": "BEDA: Belief Estimation for Strategic Dialogue Acts",
-      "score": 3,
-      "acceptable_range": [3, 4],
-      "key_match": "agent-adjacent (dialogue)"
+      "key_match": "Efficiency + Video",
+      "reasoning": "Addresses 'compute-limited' constraint (compression) applied to Video (CV background). Practical for efficient multimodal systems."
     },
     {
       "id": "2512.24880",
       "title": "mHC: Manifold-Constrained Hyper-Connections",
-      "score": 5,
-      "key_match": "high-impact architecture paper (industry buzz)",
-      "note": "Empirically observed as high-impact; should be top-3"
+      "score": 4,
+      "acceptable_range": [3, 5],
+      "key_match": "High-Impact Architecture",
+      "reasoning": "General architectural improvement (ResNet evolution). Important for a researcher/architect to know, even if not strictly Multimodal/Agentic."
     },
     {
-      "id": "2512.25070",
-      "title": "Scaling Open-Ended Reasoning to Predict the Future",
+      "id": "2512.23988",
+      "title": "Fantastic Reasoning Behaviors: Unsupervised Discovery of Reasoning",
       "score": 3,
-      "key_match": "LLM (different focus - forecasting)"
+      "acceptable_range": [3, 4],
+      "key_match": "LLM Interpretability",
+      "reasoning": "Deep dive into LLM internals. Good for the 'Researcher' persona, but less connected to CV/Multimodal specific goals."
     },
     {
-      "id": "2512.24176",
-      "title": "Guiding a Diffusion Transformer with Internal Dynamics",
+      "id": "2512.24551",
+      "title": "PhyGDPO: Physics-Aware Text-to-Video Generation",
       "score": 3,
-      "key_match": "CV (diffusion, not core focus)"
-    },
-    {
-      "id": "2512.25075",
-      "title": "SpaceTimePilot: Generative Rendering of Dynamic Scenes",
-      "score": 3,
-      "key_match": "video/CV (rendering, not core)"
-    },
-    {
-      "id": "2512.25073",
-      "title": "GaMO: Geometry-aware Multi-view Diffusion for 3D Reconstruction",
-      "score": 3,
-      "key_match": "CV (3D, different subfield)"
+      "acceptable_range": [3, 4],
+      "key_match": "Video Gen + Physics",
+      "reasoning": "Video generation is relevant to CV. 'Physics-aware' is a specific niche. Good fit, but maybe lower priority than core multimodal LLMs."
     },
     {
       "id": "2512.24210",
       "title": "GR-Dexter Technical Report",
       "score": 3,
+      "acceptable_range": [3, 4],
+      "key_match": "VLA / Robotics",
+      "reasoning": "Vision-Language-Action is relevant, but the 'dexterous hand' robotics focus might be too hardware-specific for the user's general multimodal profile."
+    },
+    {
+      "id": "2512.24176",
+      "title": "Guiding a Diffusion Transformer with Internal Dynamics",
+      "score": 3,
+      "acceptable_range": [3, 4],
+      "key_match": "Diffusion / CV",
+      "reasoning": "Solid CV/Generative paper. 'Diffusion Transformer' is a key technology, but less 'LLM' focused than top picks."
+    },
+    {
+      "id": "2512.24885",
+      "title": "BEDA: Belief Estimation for Strategic Dialogue Acts",
+      "score": 3,
       "acceptable_range": [2, 3],
-      "key_match": "VLA (robotics focused)"
+      "key_match": "Agent Dialogue",
+      "reasoning": "Focuses on dialogue/belief. Relevant to Agents, but less 'multimodal' or 'efficient' than others."
     },
     {
-      "id": "2512.23380",
-      "title": "Anomaly Detection in Operating System Logs",
-      "score": 2,
-      "key_match": "none - different domain (sysadmin)"
+      "id": "2512.25075",
+      "title": "SpaceTimePilot: Generative Rendering of Dynamic Scenes",
+      "score": 3,
+      "acceptable_range": [2, 3],
+      "key_match": "Video Generation / Rendering",
+      "reasoning": "CV/Rendering focus. Good for background, but the user is moving *toward* LLMs, so pure CV/Rendering is lower priority."
     },
     {
-      "id": "2512.22564",
-      "title": "Respiratory Sound Classification with Transformers",
+      "id": "2512.25070",
+      "title": "Scaling Open-Ended Reasoning to Predict the Future",
       "score": 2,
-      "key_match": "none - different domain (medical audio)"
+      "acceptable_range": [2, 3],
+      "key_match": "Forecasting / NLP",
+      "reasoning": "Forecasting focus. Interesting LLM application, but distinct from the user's Multimodal/CV core."
+    },
+    {
+      "id": "2512.25073",
+      "title": "GaMO: Geometry-aware Multi-view Diffusion for 3D Reconstruction",
+      "score": 2,
+      "acceptable_range": [2, 3],
+      "key_match": "3D Reconstruction",
+      "reasoning": "Pure CV/3D task. User has this background but wants to move to LLMs. Low novelty/relevance for current *growth* goals."
     },
     {
       "id": "2512.22280",
       "title": "Valori: A Deterministic Memory Substrate for AI Systems",
       "score": 2,
-      "key_match": "none - infrastructure/theoretical"
+      "acceptable_range": [1, 2],
+      "key_match": "Systems / Infrastructure",
+      "reasoning": "Low-level systems/memory paper. 'Deterministic memory' is niche. Less relevant to application/model architecture."
+    },
+    {
+      "id": "2512.23380",
+      "title": "Anomaly Detection in Operating System Logs",
+      "score": 1,
+      "acceptable_range": [1, 2],
+      "key_match": "Log Analysis",
+      "reasoning": "Different domain (Security/SysAdmin). 'Multimodal' here is logs, not CV."
+    },
+    {
+      "id": "2512.22564",
+      "title": "Respiratory Sound Classification with Transformers",
+      "score": 1,
+      "acceptable_range": [1, 2],
+      "key_match": "Medical Audio",
+      "reasoning": "Niche medical application. Little transfer to general multimodal/agentic goals."
     }
   ]
 }

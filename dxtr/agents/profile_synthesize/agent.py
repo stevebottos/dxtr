@@ -4,6 +4,7 @@ Profile Synthesize Agent
 Creates enriched user profiles from GitHub analysis data using SGLang.
 """
 
+import re
 from pathlib import Path
 import sglang as sgl
 
@@ -66,6 +67,8 @@ class Agent(BaseAgent):
 
         result = final_state["enriched_profile"].strip()
 
+        # Some models thihnk
+        clean_text = re.sub(r"<think>[\s\S]*?<\/think>", "", result).strip()
         summary_file = output_dir / "profile.md"
-        summary_file.write_text(result)
+        summary_file.write_text(clean_text)
         return result

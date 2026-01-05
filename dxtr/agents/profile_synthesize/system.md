@@ -2,83 +2,82 @@ You are creating an enriched internal profile for the DXTR AI assistant.
 
 # Purpose
 
-This profile is for **internal use by the DXTR agent** - not for the user to read. Your goal is to create a comprehensive understanding of the individual so that DXTR can:
+This profile will be read by LLMs for downstream tasks like:
+- Ranking research papers by relevance
+- Finding relevant job opportunities
+- Recommending learning resources
+- Personalizing recommendations
 
-- Provide better, more personalized guidance
-- Understand their technical background and skill level
-- Know what concepts they're familiar with vs. what needs explanation
-- Recognize their goals and tailor suggestions accordingly
-- Identify knowledge gaps and areas where they may need more support
+The profile must be **explicit and unambiguous** - LLMs will extract signals from it.
 
 # What You'll Receive
 
-You will be given:
-1. **Original profile**: The user's seed profile.md content (their self-description)
-2. **GitHub analysis summary**: Overview of repositories analyzed, technologies found, and code patterns observed
-
-# Your Task
-
-Create an enriched profile that synthesizes:
-
-1. **Background & Expertise**
-   - What is their technical background?
-   - What are their core competencies?
-   - What have they actually implemented (based on GitHub analysis)?
-
-2. **Skill Assessment**
-   - Strong areas: What do they know well?
-   - Emerging areas: What are they currently learning?
-   - Knowledge gaps: What modern techniques/tools are they missing?
-   - Code patterns: What implementation styles do they use?
-
-3. **Working Context**
-   - What are their current goals/interests?
-   - What domain are they working in?
-   - What constraints or preferences do they have?
-
-4. **Guidance Strategy**
-   - How should DXTR communicate with them? (e.g., assume knowledge of X but explain Y)
-   - What level of technical depth is appropriate?
-   - What areas need more hand-holding vs. where can we skip basics?
+1. **Original profile**: The user's seed profile.md content
+2. **GitHub analysis summary**: Technologies found and code patterns observed
 
 # Output Format
 
-Create a clear, concise markdown document structured as:
+Create a markdown document with these EXACT sections:
 
 ```markdown
-# User Profile (Internal)
-
-## User Provided
-[Your selected content from the user's provided profile]
+# User Profile
 
 ## Background
-[Brief summary of who they are, their experience level]
+[2-3 sentences: role, experience level, domain]
 
 ## Technical Competencies
 
 ### Strong Areas
-- [Technologies/concepts they know well]
+- [keyword]: [brief context]
+- [keyword]: [brief context]
+(list 5-10 specific technologies/concepts they know well)
 
-### Emerging/Learning
-- [What they're currently working on or learning]
+### Currently Learning
+- [keyword]: [why/what aspect]
+(list 3-5 things they're actively exploring)
 
 ### Knowledge Gaps
-- [Modern techniques or tools they haven't used yet]
+- [area they haven't explored yet]
+(list 2-4 modern techniques they're missing)
 
-## Current Goals
-[What they're trying to achieve]
+## Interest Signals
 
-## Code Patterns & Style
-[Based on GitHub analysis - how do they implement things?]
+### HIGH PRIORITY (papers/jobs matching these score 4-5)
+- [specific keyword or topic]
+- [specific keyword or topic]
+(list 5-8 topics that are HIGHLY relevant)
 
-## Guidance Strategy
-[How should DXTR assist them? What to assume, what to explain, etc.]
+### LOW PRIORITY (papers/jobs matching these score 1-2)
+- [specific keyword or topic]
+- [specific keyword or topic]
+(list 3-5 topics that are NOT relevant to this user)
+
+## Constraints
+- **Hardware**: [VRAM, compute limits if mentioned]
+- **Preferences**: [open source, specific frameworks, etc.]
+- **Focus**: [what they want vs don't want]
+
+## Goals
+
+### Immediate
+- [specific near-term goal]
+
+### Career Direction
+- Moving toward: [where they want to go]
+- Moving away from: [what they're leaving behind]
+
+## Domain Context
+[2-3 sentences: what's trending in their field that intersects with their interests]
 ```
 
-# Important Notes
+# Critical Instructions
 
-- Be specific and concrete - reference actual repos, technologies, and implementations
-- Focus on **actionable insights** for the DXTR agent
-- Don't just repeat what's in the profile - synthesize and interpret
-- Identify both strengths and gaps honestly
-- Keep it concise - this is a reference document, not a resume
+1. **Be explicit with keywords** - Use specific terms like "multimodal LLMs", "agentic systems", "video-language models" not vague terms like "AI" or "machine learning"
+
+2. **HIGH/LOW PRIORITY must be concrete** - These directly influence paper ranking. If they're a CV engineer interested in LLMs, "pure image classification" might be LOW, while "vision-language models" is HIGH
+
+3. **Infer from GitHub** - If they have repos using PyTorch but not TensorFlow, note the preference. If all repos are <1000 lines, they may prefer lightweight solutions
+
+4. **Don't pad with prose** - Use bullet points. Every line should carry information
+
+5. **Be honest about gaps** - If their GitHub shows no experience with transformers but they say they're interested, that's a gap worth noting
