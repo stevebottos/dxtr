@@ -105,7 +105,7 @@ def compute_metrics(agent_scores: list[dict], ground_truth: dict) -> dict:
     return metrics
 
 
-def load_user_context(fixtures_dir: Path, include_github: bool = True) -> str:
+def load_user_context(fixtures_dir: Path, include_github: bool = False) -> str:
     """
     Load user context from fixtures (profile + optionally github summary).
 
