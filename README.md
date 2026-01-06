@@ -18,23 +18,8 @@ DXTR is an AI research assistant for machine learning engineers. It helps you st
 - **Profile Management**: Maintains personalized context for tailored recommendations
 
 ## Installation
-
-### Prerequisites
-
-1. **Install Ollama**: https://ollama.ai
-2. **Install Docker**: Required for the Docling-based PDF processing pipeline
-3. **Pull required models**:
-   ```bash
-   ollama pull mistral-nemo      # Main chat agent
-   ollama pull gemma3:12b         # Deep research agent
-   ollama pull qwen2.5-coder      # Profile creator agent
-   ollama pull nomic-embed-text   # Embeddings for RAG
-   ```
-
-### Install DXTR
-
-```bash
-pip install -e .
+1. `uv pip install "sglang" --prerelease=allow`
+2. `pip install -e .`
 ```
 
 ## Usage

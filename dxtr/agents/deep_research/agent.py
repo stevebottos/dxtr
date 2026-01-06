@@ -15,8 +15,6 @@ import re
 from pathlib import Path
 
 from llama_index.core import StorageContext, load_index_from_storage
-from llama_index.llms.ollama import Ollama
-from ollama import chat
 
 from dxtr.config import config
 
@@ -31,7 +29,9 @@ class DeepResearchAgent:
         self.temperature = model_config.temperature
         self.prompts_dir = Path(__file__).parent / "prompts"
 
-    def analyze_paper(self, paper_id: str, user_query: str, user_context: str, date: str = None) -> str:
+    def analyze_paper(
+        self, paper_id: str, user_query: str, user_context: str, date: str = None
+    ) -> str:
         """
         Answer a question about a research paper using agentic RAG.
 
@@ -68,7 +68,9 @@ class DeepResearchAgent:
 
         # TODO: Load index created by docker service (needs embed_model for queries)
         print(f"  [Agent] Loading index...")
-        raise NotImplementedError("Index loading needs embed_model - refactor to use docker service")
+        raise NotImplementedError(
+            "Index loading needs embed_model - refactor to use docker service"
+        )
         total_chunks = len(index.docstore.docs)
         print(f"  [Agent] Index loaded ({total_chunks} chunks)")
 
@@ -84,12 +86,16 @@ class DeepResearchAgent:
         # STEP 2: Retrieve chunks for all questions (deduplicated)
         print(f"\n  [Step 2/3] Retrieving relevant sections...")
         retriever = index.as_retriever(similarity_top_k=3)
-        all_chunks = self._retrieve_deduplicated(retriever, exploration_questions, total_chunks)
+        all_chunks = self._retrieve_deduplicated(
+            retriever, exploration_questions, total_chunks
+        )
 
         # STEP 3: Answer user's query with retrieved chunks
         print(f"\n  [Step 3/3] Answering your question...\n")
         print(f"[Deep Research Agent]: ", end="", flush=True)
-        llm = Ollama(model=self.model_name, request_timeout=120.0, temperature=self.temperature)
+        llm = Ollama(
+            model=self.model_name, request_timeout=120.0, temperature=self.temperature
+        )
         final_answer = self._answer_with_retrieved_chunks(
             user_query, exploration_questions, all_chunks, user_context, llm
         )
@@ -146,14 +152,14 @@ Generate 3-5 targeted exploration questions for this paper."""
 
         messages = [
             {"role": "system", "content": exploration_prompt},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_message},
         ]
 
         # Call LLM (non-streaming for parsing)
         response = chat(
             model=self.model_name,
             messages=messages,
-            options={"temperature": self.temperature}
+            options={"temperature": self.temperature},
         )
 
         # Parse questions from response
@@ -171,8 +177,8 @@ Generate 3-5 targeted exploration questions for this paper."""
         """Parse numbered questions from LLM response."""
         questions = []
         # Match lines starting with "1.", "2.", etc.
-        for line in text.strip().split('\n'):
-            match = re.match(r'^\s*\d+\.\s*(.+)$', line)
+        for line in text.strip().split("\n"):
+            match = re.match(r"^\s*\d+\.\s*(.+)$", line)
             if match:
                 questions.append(match.group(1).strip())
         return questions
@@ -215,7 +221,7 @@ Generate 3-5 targeted exploration questions for this paper."""
         exploration_questions: list[str],
         chunks: list,
         user_context: str,
-        llm
+        llm,
     ) -> str:
         """
         Answer user's query using chunks retrieved via exploration questions.
@@ -235,7 +241,9 @@ Generate 3-5 targeted exploration questions for this paper."""
         context_str = "\n\n---\n\n".join(chunk_texts)
 
         # Build list of exploration questions
-        questions_list = "\n".join([f"{i}. {q}" for i, q in enumerate(exploration_questions, 1)])
+        questions_list = "\n".join(
+            [f"{i}. {q}" for i, q in enumerate(exploration_questions, 1)]
+        )
 
         # Build prompt
         prompt = f"""{user_context}
@@ -305,7 +313,9 @@ Answer the user's question using the retrieved paper sections above. The explora
 _agent = DeepResearchAgent()
 
 
-def analyze_paper(paper_id: str, user_query: str, user_context: str, date: str = None) -> str:
+def analyze_paper(
+    paper_id: str, user_query: str, user_context: str, date: str = None
+) -> str:
     """
     Answer a question about a research paper using RAG.
 

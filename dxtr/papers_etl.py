@@ -22,7 +22,6 @@ from datetime import datetime
 from contextlib import contextmanager
 from io import BytesIO
 
-import docker
 from docker.errors import NotFound, APIError
 
 from llama_index.core import Document, VectorStoreIndex
@@ -183,7 +182,9 @@ class DoclingService:
             "docling_json": result.get("docling_json"),
         }
 
-    def generate_embeddings(self, texts: list[str], timeout: int = 300) -> list[list[float]]:
+    def generate_embeddings(
+        self, texts: list[str], timeout: int = 300
+    ) -> list[list[float]]:
         """
         Generate embeddings for a list of text chunks
 

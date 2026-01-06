@@ -10,7 +10,6 @@ All agents inherit from this to get:
 
 from pathlib import Path
 from typing import Any
-from ollama import chat
 
 from .prompts import PromptManager
 from .tools import ToolRegistry
@@ -32,7 +31,7 @@ class Agent:
         name: str,
         model: str,
         prompts_dir: Path,
-        default_options: dict | None = None
+        default_options: dict | None = None,
     ):
         """
         Initialize agent.
@@ -59,7 +58,7 @@ class Agent:
         prompt_name: str | None = None,
         use_tools: bool = False,
         stream: bool = False,
-        **options
+        **options,
     ) -> Any:
         """
         Chat with the LLM.
@@ -102,7 +101,7 @@ class Agent:
         messages: list[dict],
         prompt_name: str | None = None,
         max_iterations: int = 5,
-        **options
+        **options,
     ) -> tuple[str, list[dict]]:
         """
         Chat with automatic tool calling loop.
@@ -132,10 +131,7 @@ class Agent:
         while iterations < max_iterations:
             # Get response with tools
             response = self.chat(
-                messages=messages,
-                use_tools=True,
-                stream=False,
-                **options
+                messages=messages, use_tools=True, stream=False, **options
             )
 
             # Check if there are tool calls
@@ -157,29 +153,26 @@ class Agent:
                     # Format result for LLM
                     if isinstance(result, dict):
                         import json
+
                         result_str = json.dumps(result)
                     else:
                         result_str = str(result)
 
-                    messages.append({
-                        "role": "tool",
-                        "content": result_str
-                    })
+                    messages.append({"role": "tool", "content": result_str})
                 except Exception as e:
                     # Add error message
-                    messages.append({
-                        "role": "tool",
-                        "content": f"Error calling {function_name}: {str(e)}"
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": f"Error calling {function_name}: {str(e)}",
+                        }
+                    )
 
             iterations += 1
 
         # Max iterations reached, get final response
         final_response = self.chat(
-            messages=messages,
-            use_tools=False,
-            stream=False,
-            **options
+            messages=messages, use_tools=False, stream=False, **options
         )
 
         return final_response.message.content, messages

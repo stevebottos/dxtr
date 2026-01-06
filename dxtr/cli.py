@@ -4,7 +4,6 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
-from ollama import chat
 from .config import config
 from .agents.papers_helper.tools import paper_tools
 
@@ -54,7 +53,9 @@ def _load_user_context():
 
                             # Build keyword index
                             for keyword in keywords:
-                                keyword_to_files[keyword.lower()].append(f"{repo}/{rel_file}")
+                                keyword_to_files[keyword.lower()].append(
+                                    f"{repo}/{rel_file}"
+                                )
 
                             # Store file summaries by repo
                             if summary:
@@ -80,9 +81,7 @@ def _load_user_context():
                 # Sort keywords by frequency
                 sorted_keywords = sorted(
                     keyword_to_files.items(), key=lambda x: len(x[1]), reverse=True
-                )[
-                    :50
-                ]  # Top 50 most common keywords
+                )[:50]  # Top 50 most common keywords
 
                 for keyword, files in sorted_keywords:
                     file_count = len(set(files))
@@ -93,8 +92,12 @@ def _load_user_context():
 
                 for repo, files in sorted(repo_summaries.items()):
                     context_parts.append(f"\n### {repo}\n")
-                    for file_info in files[:10]:  # Limit to 10 files per repo to save space
-                        context_parts.append(f"- `{file_info['file']}`: {file_info['summary']}")
+                    for file_info in files[
+                        :10
+                    ]:  # Limit to 10 files per repo to save space
+                        context_parts.append(
+                            f"- `{file_info['file']}`: {file_info['summary']}"
+                        )
 
                     if len(files) > 10:
                         context_parts.append(f"- ... and {len(files) - 10} more files")
@@ -233,7 +236,9 @@ def cmd_chat(args):
 
                     if function_name in available_functions:
                         print(f"[Calling {function_name}...]")
-                        function_result = available_functions[function_name](**function_args)
+                        function_result = available_functions[function_name](
+                            **function_args
+                        )
 
                         # Format tool result for better model understanding
                         if function_result.get("success"):
@@ -274,7 +279,9 @@ def cmd_chat(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DXTR Agent - AI-powered research assistant")
+    parser = argparse.ArgumentParser(
+        description="DXTR Agent - AI-powered research assistant"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # dxtr chat command
