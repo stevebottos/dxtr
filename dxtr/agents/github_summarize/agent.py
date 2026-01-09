@@ -13,7 +13,7 @@ import sglang as sgl
 from dxtr.agents.base import BaseAgent
 from dxtr.config_v2 import config
 
-from . import util
+from . import utils
 
 
 class Agent(BaseAgent):
@@ -32,7 +32,7 @@ class Agent(BaseAgent):
         url_pattern = r'https?://github\.com/[^\s<>"{}|\\^`\[\]]+'
         urls = re.findall(url_pattern, profile_content)
         for url in urls:
-            if util.is_profile_url(url):
+            if utils.is_profile_url(url):
                 return url
         return None
 
@@ -57,19 +57,19 @@ class Agent(BaseAgent):
 
     def analyze_github_repos(self, github_url: str) -> dict[str, str]:
         """Analyze repositories using SGLang's native parallel batching."""
-        if not util.is_profile_url(github_url):
+        if not utils.is_profile_url(github_url):
             return {}
 
-        html = util.fetch_profile_html(github_url)
+        html = utils.fetch_profile_html(github_url)
         if not html:
             return {}
 
-        pinned_repos = util.extract_pinned_repos(html)
+        pinned_repos = utils.extract_pinned_repos(html)
         pinned_repos = [repo for repo in pinned_repos if not repo.endswith("/dxtr-cli")]
 
         successful = []
         for repo_url in pinned_repos:
-            result = util.clone_repo(repo_url)
+            result = utils.clone_repo(repo_url)
             if result["success"]:
                 successful.append(result)
 
@@ -78,11 +78,11 @@ class Agent(BaseAgent):
         python_files = []
         for result in successful:
             repo_path = Path(result["path"])
-            python_files.extend(util.find_python_files(repo_path))
+            python_files.extend(utils.find_python_files(repo_path))
 
         batch_data = []
         file_paths = []
-        schema_json = json.dumps(util.MODULE_ANALYSIS_SCHEMA)
+        schema_json = json.dumps(utils.MODULE_ANALYSIS_SCHEMA)
 
         for py_file in python_files:
             try:

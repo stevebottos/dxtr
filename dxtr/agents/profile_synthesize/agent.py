@@ -1,11 +1,17 @@
 """
 Profile Synthesize Agent
 
-Creates enriched user profiles from GitHub analysis data using SGLang.
+Synthesizes a comprehensive user profile from:
+1. The seed profile.md provided by user
+2. Artifacts in .dxtr/ directory (github_summary.json, resume_summary.json, etc.)
+
+Outputs to .dxtr/profile.md
 """
 
+import json
 import re
 from pathlib import Path
+
 import sglang as sgl
 
 from dxtr.config_v2 import config
@@ -13,7 +19,7 @@ from dxtr.agents.base import BaseAgent
 
 
 class Agent(BaseAgent):
-    """Agent for synthesizing enriched profiles from GitHub analysis."""
+    """Agent for synthesizing enriched profiles from available artifacts."""
 
     def __init__(self):
         """Initialize profile synthesize agent."""
@@ -27,37 +33,85 @@ class Agent(BaseAgent):
     @staticmethod
     @sgl.function
     def create_profile_func(s, context, system_prompt, max_tokens, temp):
-        """SGLang function for the final profile enrichment step."""
+        """SGLang function for profile synthesis."""
         s += sgl.system(system_prompt)
         s += sgl.user(context)
         s += sgl.assistant(
             sgl.gen("enriched_profile", max_tokens=max_tokens, temperature=temp)
         )
 
-    def run(
-        self,
-        profile_path: Path,
-        output_dir: Path | None = None,
-        additional_context: str | None = None,
-    ) -> str:
-        """Create enriched profile from profile.md file.
+    def _read_artifact(self, artifact_path: Path) -> str | None:
+        """Read an artifact file if it exists."""
+        if artifact_path.exists():
+            try:
+                content = artifact_path.read_text()
+                # For JSON files, pretty-print for readability
+                if artifact_path.suffix == ".json":
+                    data = json.loads(content)
+                    return json.dumps(data, indent=2)
+                return content
+            except Exception:
+                return None
+        return None
+
+    def _gather_artifacts(self) -> dict[str, str]:
+        """
+        Gather all available artifacts from .dxtr/ directory.
+
+        Returns:
+            Dict mapping artifact name to content
+        """
+        artifacts = {}
+        dxtr_dir = config.paths.dxtr_dir
+
+        # Define known artifact files
+        artifact_files = {
+            "github_summary": dxtr_dir / "github_summary.json",
+            "resume_summary": dxtr_dir / "resume_summary.json",
+            "website_summary": dxtr_dir / "website_summary.json",
+        }
+
+        for name, path in artifact_files.items():
+            content = self._read_artifact(path)
+            if content:
+                artifacts[name] = content
+
+        return artifacts
+
+    def run(self, seed_profile_path: Path) -> str:
+        """
+        Create enriched profile from seed profile and .dxtr/ artifacts.
 
         Args:
-            profile_path: Path to the seed profile.md
-            output_dir: Directory to save outputs (github_summary.json, etc.)
-                       Defaults to .dxtr in current directory
+            seed_profile_path: Path to the user's seed profile.md
+
+        Returns:
+            The synthesized profile content
         """
-        if output_dir is None:
-            output_dir = config.paths.dxtr_dir
+        output_dir = config.paths.dxtr_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        profile_content = profile_path.read_text()
-        enrichment_context = f"# Original Profile\n\n{profile_content}\n\n"
+        # Read seed profile
+        seed_profile_path = Path(seed_profile_path)
+        if not seed_profile_path.exists():
+            raise FileNotFoundError(f"Seed profile not found: {seed_profile_path}")
 
-        enrichment_context = (
-            enrichment_context + f"# Github Summary\n\n{additional_context}\n\n"
-        )
-        # Native SGLang execution for the final step
+        seed_content = seed_profile_path.read_text()
+
+        # Gather all available artifacts
+        artifacts = self._gather_artifacts()
+
+        # Build context for synthesis
+        context_parts = [f"# Seed Profile\n\n{seed_content}"]
+
+        for name, content in artifacts.items():
+            # Convert artifact name to readable title
+            title = name.replace("_", " ").title()
+            context_parts.append(f"# {title}\n\n{content}")
+
+        enrichment_context = "\n\n---\n\n".join(context_parts)
+
+        # Run synthesis
         final_state = self.create_profile_func.run(
             context=enrichment_context,
             system_prompt=self.system_prompt,
@@ -67,8 +121,12 @@ class Agent(BaseAgent):
 
         result = final_state["enriched_profile"].strip()
 
-        # Some models thihnk
-        clean_text = re.sub(r"<think>[\s\S]*?<\/think>", "", result).strip()
-        summary_file = output_dir / "profile.md"
-        summary_file.write_text(clean_text)
-        return result
+        # Clean think tags if present
+        clean_text = re.sub(r"<think>[\s\S]*?</think>", "", result).strip()
+
+        # Save to configured profile path
+        output_file = config.paths.profile_file
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(clean_text)
+
+        return clean_text

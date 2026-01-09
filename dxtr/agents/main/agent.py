@@ -1,26 +1,30 @@
 """
-Main Agent - Handles chat and coordinates submodules using SGLang.
+Main Agent - Lightweight chat agent that coordinates sub-agents via tools.
+
+Responsibilities:
+- Handle chat functionality with minimal context
+- Offload context-heavy operations to specialized agents
+- All sub-agents return results to main when work is done
 """
 
 import json
 import requests
 from pathlib import Path
-import sglang as sgl
-from typing import Generator, Any
+from typing import Generator
 
 from dxtr.agents.base import BaseAgent
 from dxtr.config_v2 import config
-from dxtr.agents.github_summarize import agent as github_agent
-from dxtr.agents.profile_synthesize import agent as profile_agent
+from dxtr.agents.github_summarize.agent import Agent as GithubSummarizeAgent
+from dxtr.agents.profile_synthesize.agent import Agent as ProfileSynthesizeAgent
 
 
-# Tool Definitions
+# Tool Definitions - these map to methods on MainAgent
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the content of a file. Use this to read the initial profile.md.",
+            "description": "Read the content of a file. Use this to read the user's seed profile.md.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -34,11 +38,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "summarize_github",
-            "description": "Run the GitHub summary agent. Analyzes repos from a profile file.",
+            "description": "Analyze GitHub repos from the seed profile. Extracts GitHub URL from profile, clones pinned repos, and creates a summary. Saves result to .dxtr/github_summary.json.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "profile_path": {"type": "string", "description": "Path to the profile file containing GitHub URL"}
+                    "profile_path": {"type": "string", "description": "Path to the seed profile file containing GitHub URL"}
                 },
                 "required": ["profile_path"]
             }
@@ -48,21 +52,20 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "synthesize_profile",
-            "description": "Run the profile synthesis agent. Creates final profile from summary.",
+            "description": "Synthesize the final user profile from available artifacts in .dxtr/ directory. Reads github_summary.json and other artifacts, then creates a comprehensive profile. Saves result to .dxtr/profile.md.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "profile_path": {"type": "string", "description": "Path to seed profile file"},
-                    "summary_path": {"type": "string", "description": "Path to github summary JSON"}
+                    "seed_profile_path": {"type": "string", "description": "Path to the original seed profile.md provided by user"}
                 },
-                "required": ["profile_path", "summary_path"]
+                "required": ["seed_profile_path"]
             }
         }
     }
 ]
 
 class MainAgent(BaseAgent):
-    """Main agent for chat and coordination using SGLang."""
+    """Lightweight chat agent that coordinates sub-agents via tools."""
 
     def __init__(self):
         """Initialize main agent."""
@@ -70,33 +73,60 @@ class MainAgent(BaseAgent):
         self.system_prompt = self.load_system_prompt(
             Path(__file__).parent / "system.md"
         )
+        # Track seed profile path for the session
+        self.seed_profile_path: str | None = None
 
-    @staticmethod
-    @sgl.function
-    def chat_func(s, messages, system_prompt, tools_desc, max_tokens, temp):
-        """SGLang function for chat."""
-        # Inject system prompt and tools description
-        full_system = system_prompt + "\n\nAvailable Tools:\n" + tools_desc
-        full_system += "\n\nTo use a tool, respond ONLY with a JSON object:\n"
-        full_system += '{"tool": "tool_name", "parameters": {}}\n'
-        full_system += "Otherwise, respond normally."
-        
-        s += sgl.system(full_system)
-        
-        # Replay history
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            if role == "user":
-                s += sgl.user(content)
-            elif role == "assistant":
-                s += sgl.assistant(content)
-            elif role == "tool":
-                # Represent tool outputs as user messages or distinct block
-                s += sgl.user(f"Tool Output: {content}")
-        
-        # Generate response
-        s += sgl.assistant(sgl.gen("response", max_tokens=max_tokens, temperature=temp))
+    # --- Tool Methods (called by CLI via getattr) ---
+
+    def read_file(self, file_path: str) -> str:
+        """Read content from a file."""
+        try:
+            path = Path(file_path).expanduser().resolve()
+            if not path.exists():
+                return f"Error: File not found: {file_path}"
+            content = path.read_text()
+            # Store seed profile path if this looks like a profile
+            if "profile" in file_path.lower() or file_path.endswith(".md"):
+                self.seed_profile_path = str(path)
+            return content
+        except Exception as e:
+            return f"Error reading file: {e}"
+
+    def summarize_github(self, profile_path: str) -> str:
+        """Run GitHub summarize agent on the profile."""
+        try:
+            path = Path(profile_path).expanduser().resolve()
+            if not path.exists():
+                return f"Error: Profile not found: {profile_path}"
+
+            agent = GithubSummarizeAgent()
+            result = agent.run(profile_path=path)
+
+            if result:
+                return f"GitHub summary complete. Analyzed {len(result)} files. Saved to .dxtr/github_summary.json"
+            else:
+                return "No GitHub URL found in profile or no repos to analyze."
+        except Exception as e:
+            return f"Error running GitHub summarize: {e}"
+
+    def synthesize_profile(self, seed_profile_path: str) -> str:
+        """Run profile synthesis agent to create final profile from artifacts."""
+        try:
+            path = Path(seed_profile_path).expanduser().resolve()
+            if not path.exists():
+                return f"Error: Seed profile not found: {seed_profile_path}"
+
+            agent = ProfileSynthesizeAgent()
+            result = agent.run(seed_profile_path=path)
+
+            if result:
+                return f"Profile synthesized successfully. Saved to {config.paths.profile_file}"
+            else:
+                return "Error: Profile synthesis returned empty result."
+        except Exception as e:
+            return f"Error running profile synthesis: {e}"
+
+    # --- Chat Method ---
 
     def chat(self, messages: list[dict], stream: bool = True) -> Generator[dict, None, None]:
         """
@@ -176,7 +206,8 @@ class MainAgent(BaseAgent):
                                     yield {"type": "content", "data": content}
 
                                 # Handle tool calls (streamed incrementally)
-                                tool_calls = delta.get("tool_calls", [])
+                                # Note: delta may have tool_calls=None, so use 'or []'
+                                tool_calls = delta.get("tool_calls") or []
                                 for tc in tool_calls:
                                     idx = tc.get("index", 0)
                                     if idx not in accumulated_tool_calls:

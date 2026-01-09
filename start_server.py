@@ -30,6 +30,7 @@ MODELS = {  # --- NEW: Reasoning & Tool Calling (Jan 2026) ---
         "quantization": "awq_marlin",
         "tool_call_parser": "qwen",  # Native /think and /no_think switching
         "max_total_tokens": 32768,
+        "mem_fraction_static": 0.80,
         "max_running_requests": 8,
         "description": "Qwen 3 8B Instruct AWQ (~6GB VRAM) - Best tool calling stability",
     },
