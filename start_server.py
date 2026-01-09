@@ -16,7 +16,31 @@ import sys
 
 # Model configurations
 # Each model has: path, quantization method, and recommended settings
-MODELS = {
+MODELS = {  # --- NEW: Reasoning & Tool Calling (Jan 2026) ---
+    "falcon-h1r-7b": {
+        "path": "tiiuae/falcon-h1r-7b-awq",  # TII's Jan 2026 release
+        "quantization": "awq_marlin",
+        "tool_call_parser": "falcon_agent",  # Optimized for hybrid Mamba-Transformer tool use
+        "max_total_tokens": 262144,  # Massive context window support
+        "max_running_requests": 12,  # High throughput due to hybrid architecture
+        "description": "Falcon H1R 7B (~5GB VRAM) - Jan 2026 SOTA reasoning/agentic hybrid",
+    },
+    "qwen3-8b": {
+        "path": "Qwen/Qwen3-8B-AWQ",
+        "quantization": "awq_marlin",
+        "tool_call_parser": "qwen",  # Native /think and /no_think switching
+        "max_total_tokens": 32768,
+        "max_running_requests": 8,
+        "description": "Qwen 3 8B Instruct AWQ (~6GB VRAM) - Best tool calling stability",
+    },
+    "nemotron-nano-8b": {
+        "path": "nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1-FP4-QAD",
+        "trust_remote_code": True,
+        "tool_call_parser": "llama3",  # Follows Llama 3.1 tool schema
+        "max_total_tokens": 32768,
+        "max_running_requests": 8,
+        "description": "Nemotron-Nano 8B AWQ (~6GB VRAM) - NVIDIA's reasoning/agent specialist",
+    },
     "qwen-coder-7b": {
         "path": "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
         "quantization": "awq_marlin",
@@ -121,6 +145,15 @@ def build_command(model_key: str, port: int) -> list[str]:
     # Optional arguments based on config
     if "tool_call_parser" in config:
         cmd.extend(["--tool-call-parser", config["tool_call_parser"]])
+
+    if "chat_template" in config:
+        cmd.extend(["--chat-template", config["chat_template"]])
+
+    if "reasoning_parser" in config:
+        cmd.extend(["--reasoning-parser", config["reasoning_parser"]])
+
+    if config.get("enable_auto_tool_choice"):
+        cmd.append("--enable-auto-tool-choice")
 
     if "max_total_tokens" in config:
         cmd.extend(["--max-total-tokens", str(config["max_total_tokens"])])

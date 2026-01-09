@@ -21,6 +21,42 @@ def cmd_get_papers(args):
     """Get papers command - ETL pipeline for paper retrieval and processing"""
     run_etl(date=args.date, max_papers=args.max_papers)
 
+import re
+
+def parse_tool_tags(text: str) -> list[dict]:
+    """
+    Parse <tools>fn(arg='val'); ...</tools> format.
+    Returns a list of tool call dicts: [{"tool": name, "parameters": {}}]
+    """
+    # 1. Extract content between <tools> and </tools>
+    match = re.search(r"<tools>(.*?)</tools>", text, re.DOTALL)
+    if not match:
+        return []
+    
+    content = match.group(1).strip()
+    # 2. Split by semicolon
+    calls = [c.strip() for c in content.split(";") if c.strip()]
+    
+    results = []
+    for call in calls:
+        # Regex to match: fn_name(arg1='val1', arg2='val2')
+        # This is a simple parser, might need improvement for complex values
+        m = re.match(r"(\w+)\((.*)\)", call)
+        if m:
+            tool_name = m.group(1)
+            params_str = m.group(2)
+            
+            # Parse parameters: key='val'
+            params = {}
+            # Matches: key='val' or key = 'val'
+            p_matches = re.finditer(r"(\w+)\s*=\s*'([^']*)'", params_str)
+            for pm in p_matches:
+                params[pm.group(1)] = pm.group(2)
+            
+            results.append({"tool": tool_name, "parameters": params})
+            
+    return results
+
 def _process_turn(agent, chat_history):
     """
     Process a single turn of conversation:
@@ -40,52 +76,46 @@ def _process_turn(agent, chat_history):
             full_response += chunk
         print() # Newline after response
         
-        # Check for tool call
-        tool_call = None
-        try:
-            cleaned = full_response.strip()
-            # If think tags are present, we should clean them before parsing JSON
-            if "<think>" in full_response and "</think>" in full_response:
-                 cleaned = full_response.split("</think>")[-1].strip()
-            
-            if cleaned.startswith("{") and cleaned.endswith("}"):
-                data = json.loads(cleaned)
-                if "tool" in data:
-                    tool_call = data
-        except json.JSONDecodeError:
-            pass
+        # Check for tool calls using new tag format
+        tool_calls = parse_tool_tags(full_response)
 
-        if tool_call:
-            tool_name = tool_call.get("tool")
-            tool_params = tool_call.get("parameters", {})
+        if tool_calls:
+            all_results = []
+            for tool_call in tool_calls:
+                tool_name = tool_call.get("tool")
+                tool_params = tool_call.get("parameters", {})
+                
+                print(f"\n[Calling Tool: {tool_name}]")
+                
+                result = None
+                if hasattr(agent, tool_name):
+                    try:
+                        tool_func = getattr(agent, tool_name)
+                        result = tool_func(**tool_params)
+                    except Exception as e:
+                        result = f"Error executing tool '{tool_name}': {e}"
+                else:
+                    result = f"Error: Tool '{tool_name}' not found."
+                
+                print(f"[Result: {str(result)[:100]}...]")
+                
+                # Context Reloading Hook
+                if tool_name == "synthesize_profile" and "Profile synthesized" in str(result):
+                    new_context = _load_user_context()
+                    if new_context:
+                        # Remove old profile system message if exists
+                        chat_history[:] = [msg for msg in chat_history if not (msg.get("role") == "system" and "User Profile" in msg.get("content", ""))]
+                        # Add new
+                        chat_history.insert(0, {"role": "system", "content": f"User Profile:\n{new_context}"})
+                        print("[System: User Profile Loaded]")
+                
+                all_results.append(f"Result of {tool_name}: {result}")
             
-            print(f"\n[Calling Tool: {tool_name}]")
-            
-            result = None
-            if hasattr(agent, tool_name):
-                try:
-                    tool_func = getattr(agent, tool_name)
-                    result = tool_func(**tool_params)
-                except Exception as e:
-                    result = f"Error executing tool '{tool_name}': {e}"
-            else:
-                result = f"Error: Tool '{tool_name}' not found."
-            
-            print(f"[Result: {str(result)[:100]}...]")
-            
-            # Context Reloading Hook
-            if tool_name == "synthesize_profile" and "Profile synthesized" in str(result):
-                new_context = _load_user_context()
-                if new_context:
-                    # Remove old profile system message if exists
-                    chat_history[:] = [msg for msg in chat_history if not (msg.get("role") == "system" and "User Profile" in msg.get("content", ""))]
-                    # Add new
-                    chat_history.insert(0, {"role": "system", "content": f"User Profile:\n{new_context}"})
-                    print("[System: User Profile Loaded]")
-            
-            # Add tool interaction to history
+            # Add interactions to history
             chat_history.append({"role": "assistant", "content": full_response})
-            chat_history.append({"role": "tool", "content": str(result)})
+            # Combine all tool results into one response for simplicity in history
+            combined_result = "\n".join(all_results)
+            chat_history.append({"role": "tool", "content": combined_result})
             
             # Loop continues to let agent respond to tool result
             continue
