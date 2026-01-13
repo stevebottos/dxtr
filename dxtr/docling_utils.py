@@ -44,14 +44,33 @@ def _get_converter():
     return _converter
 
 
+def _get_embed_device() -> str:
+    """Determine device for embedding model based on GPU memory availability."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Check free GPU memory (need ~6GB for embedding model)
+            free_mem_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+            if free_mem_gb >= 6.0:
+                return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def get_embed_model():
-    """Lazy load embedding model"""
+    """Lazy load embedding model (uses GPU if >=6GB available, else CPU)"""
     global _embed_model
     if _embed_model is None:
         from llama_index.embeddings.huggingface import HuggingFaceEmbedding
         EMBED_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
-        print(f"Loading embedding model: {EMBED_MODEL_NAME}")
-        _embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME, trust_remote_code=True)
+        device = _get_embed_device()
+        print(f"Loading embedding model: {EMBED_MODEL_NAME} ({device.upper()})")
+        _embed_model = HuggingFaceEmbedding(
+            model_name=EMBED_MODEL_NAME,
+            trust_remote_code=True,
+            device=device
+        )
     return _embed_model
 
 

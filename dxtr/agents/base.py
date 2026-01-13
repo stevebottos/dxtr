@@ -5,7 +5,8 @@ Provides common functionality for prompt loading and SGLang backend management.
 """
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 import sglang as sgl
 
 from dxtr.config_v2 import config
@@ -17,11 +18,13 @@ class GlobalState:
     profile_required: bool = True
     github_summary_loaded: bool = False
     github_summary_required: bool = False
+    today_date: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
 
     def check_state(self):
         """Update state based on file existence."""
         self.profile_loaded = config.paths.profile_file.exists()
         self.github_summary_loaded = config.paths.github_summary_file.exists()
+        self.today_date = datetime.now().strftime("%Y-%m-%d")
 
 class BaseAgent:
     """Base class for SGLang-powered agents."""

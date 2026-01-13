@@ -70,7 +70,7 @@ def cmd_get_papers(args):
     """Get papers command - ETL pipeline for paper retrieval and processing"""
     run_etl(date=args.date, max_papers=args.max_papers)
 
-def _process_turn(agent, chat_history):
+def _process_turn(agent, chat_history, debug: bool = False):
     """
     Process a single turn of conversation:
     - Generate response
@@ -88,12 +88,16 @@ def _process_turn(agent, chat_history):
         # Consume generator - now yields dicts with type and data
         for chunk in response_generator:
             if chunk["type"] == "content":
+                if debug:
+                    print(f"\n[DEBUG content]: {chunk['data']!r}", flush=True)
                 # Filter out <think> tags before printing
                 filtered = think_filter.process(chunk["data"])
                 if filtered:
                     print(filtered, end="", flush=True)
                 full_response += chunk["data"]
             elif chunk["type"] == "tool_calls":
+                if debug:
+                    print(f"\n[DEBUG tool_calls]: {chunk['data']}", flush=True)
                 tool_calls = chunk["data"]
 
         # Flush any remaining content
@@ -204,7 +208,7 @@ def cmd_chat(args):
     # We inject a hidden user message to prompt the agent to start.
     print("Connecting to agent...\n")
     chat_history.append({"role": "user", "content": "Hello. Please check if my profile is loaded and briefly introduce yourself."})
-    _process_turn(agent, chat_history)
+    _process_turn(agent, chat_history, debug=args.debug)
 
     while True:
         try:
@@ -227,7 +231,7 @@ def cmd_chat(args):
             chat_history.append({"role": "user", "content": user_input})
 
             # Process turn
-            _process_turn(agent, chat_history)
+            _process_turn(agent, chat_history, debug=args.debug)
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!\n")
@@ -243,6 +247,11 @@ def main():
 
     # dxtr chat command
     parser_chat = subparsers.add_parser("chat", help="Start the DXTR chat interface")
+    parser_chat.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show raw model output before filtering (for debugging)"
+    )
     parser_chat.set_defaults(func=cmd_chat)
 
     # dxtr get-papers command
@@ -268,6 +277,8 @@ def main():
 
     # Default to chat if no command specified
     if args.command is None:
+        # Set default debug flag for when running without subcommand
+        args.debug = False
         cmd_chat(args)
     else:
         args.func(args)
