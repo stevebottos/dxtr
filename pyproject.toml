@@ -1,26 +1,20 @@
 [project]
-name = "dxtr-cli"
+name = "dxtr"
 version = "0.1.0"
-description = "A personalized ML research assistant"
+description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  # "huggingface-hub>=1.2.3",
-  "requests>=2.32.5",
-  "llama-index>=0.12.0",
-  "docling>=2.66.0",
-  "llama-index-embeddings-huggingface>=0.5.0",
-  "einops>=0.8.0",
+  "pydantic>=2.0.0",
+  "httpx>=0.25.0",
+  "fastapi>=0.128.0",
+  "uvicorn>=0.30.0",
+  "pydantic-ai>=1.44.0",
 ]
 
-[project.optional-dependencies]
-test = ["pytest>=7.0.0", "pytest-mock>=3.0.0"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[project.scripts]
-dxtr = "dxtr.cli:main"
-
-[tool.setuptools]
-packages = ["dxtr"]
-
-[tool.setuptools.package-data]
-dxtr = ["**/*.md"]
+[tool.hatch.build.targets.wheel]
+packages = ["dxtr"] # Or ["src/dxtr"] if using the src layout

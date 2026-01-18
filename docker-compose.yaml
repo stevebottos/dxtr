@@ -1,0 +1,36 @@
+services:
+  # The Database
+  db:
+    image: postgres:16
+    container_name: litellm_db
+    environment:
+      POSTGRES_USER: llm_admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: litellm_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm_db -U llm_admin"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # The Proxy
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-latest
+    container_name: litellm_proxy
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LITELLM_MASTER_KEY=sk-1234
+      - DATABASE_URL=postgresql://llm_admin:password123@db:5432/litellm_db
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["--config", "/app/config.yaml"]
+
+volumes:
+  postgres_data:
