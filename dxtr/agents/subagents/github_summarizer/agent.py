@@ -1,11 +1,11 @@
 import json
-import asyncio
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
-from dxtr import DXTR_DIR, load_system_prompt, github_summarizer, get_model_settings
+from dxtr import DXTR_DIR, load_system_prompt, github_summarizer, get_model_settings, log_tool_usage
+from dxtr.agents.subagents.util import parallel_map
 
 from .util import (
     is_profile_url,
@@ -38,11 +38,11 @@ class SummarizeReposRequest(BaseModel):
 
 
 @agent.tool
+@log_tool_usage
 async def get_pinned_repos(ctx: RunContext[str]) -> list[str]:
     """Fetch pinned repository URLs from the user's GitHub profile.
     If you have already called this function in your history, don't worry about calling it again."""
     github_url = ctx.deps
-    print(f"Call: get_pinned_repos for {github_url}")
 
     if not is_profile_url(github_url):
         return [f"Error: Not a valid GitHub profile URL: {github_url}"]
@@ -59,6 +59,7 @@ async def get_pinned_repos(ctx: RunContext[str]) -> list[str]:
 
 
 @agent.tool_plain
+@log_tool_usage
 async def clone_repos(request: CloneReposRequest) -> str:
     """Clone GitHub repositories to local disk."""
     print(f"Cloning {len(request.repo_urls)} repos...")
@@ -88,6 +89,7 @@ async def clone_repos(request: CloneReposRequest) -> str:
 
 
 @agent.tool_plain
+@log_tool_usage
 async def summarize_repos(request: SummarizeReposRequest) -> str:
     """Analyze Python files across cloned repositories. Saves results to ~/.dxtr/github_summary.json."""
     print(f"Summarizing {len(request.repo_paths)} repos...")
@@ -118,60 +120,33 @@ async def summarize_repos(request: SummarizeReposRequest) -> str:
     if not all_files:
         return "No Python files found to analyze"
 
-    print(f"\n[summarize_repos] Analyzing {len(all_files)} files...")
-
-    pending = set(f["path"] for f in all_files)
-    completed_count = [0]
-
-    async def summarize_one(file_info: dict) -> dict:
+    async def summarize_one(file_info: dict, idx: int, total: int) -> dict:
         file_path = file_info["path"]
         try:
             result = await agent.run(
                 f"Analyze this file ({file_path}):\n\n```python\n{file_info['content']}\n```",
                 model_settings=get_model_settings(),
             )
-            pending.discard(file_path)
-            completed_count[0] += 1
-            print(f"  ✓ [{completed_count[0]}/{len(all_files)}] {file_path}")
+            print(f"  ✓ [{idx}/{total}] {file_path}")
             return {
                 "repo_path": file_info["repo_path"],
                 "file": file_path,
                 "analysis": result.output,
             }
         except Exception as e:
-            pending.discard(file_path)
-            completed_count[0] += 1
-            print(
-                f"  ✗ [{completed_count[0]}/{len(all_files)}] {file_path} (ERROR: {e})"
-            )
+            print(f"  ✗ [{idx}/{total}] {file_path} (ERROR: {e})")
             return {
                 "repo_path": file_info["repo_path"],
                 "file": file_path,
                 "error": str(e),
             }
 
-    async def print_pending_status():
-        while pending:
-            await asyncio.sleep(10)
-            if pending:
-                print(f"\n  ⏳ Still waiting on {len(pending)} files:")
-                for p in sorted(pending)[:5]:
-                    print(f"      - {p}")
-                if len(pending) > 5:
-                    print(f"      ... and {len(pending) - 5} more")
-                print()
-
-    tasks = [summarize_one(f) for f in all_files]
-    status_task = asyncio.create_task(print_pending_status())
-
-    try:
-        file_summaries = await asyncio.gather(*tasks)
-    finally:
-        status_task.cancel()
-        try:
-            await status_task
-        except asyncio.CancelledError:
-            pass
+    file_summaries = await parallel_map(
+        all_files,
+        summarize_one,
+        desc="Analyzing files",
+        status_interval=10.0,
+    )
 
     # Group by repo
     repo_summaries = {}

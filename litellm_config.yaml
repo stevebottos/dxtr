@@ -7,26 +7,49 @@ general_settings:
 model_list:
   - model_name: master
     litellm_params:
-      # model: openrouter/google/gemini-2.5-flash-lite
       model: openrouter/nvidia/nemotron-3-nano-30b-a3b
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "https://openrouter.ai/api/v1"
-      max_parallel_requests: 2  # Limit concurrent requests
+      max_parallel_requests: 2
+      temperature: 0.0
+      supports_streaming: true
+      extra_body:
+        provider:
+          require_parameters: true
 
   - model_name: github_summarizer
     litellm_params:
-      # model: openrouter/google/gemini-2.5-flash-lite
       model: openrouter/nvidia/nemotron-3-nano-30b-a3b
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "https://openrouter.ai/api/v1"
       max_parallel_requests: 20
       temperature: 0.0
+      supports_streaming: true
+      extra_body:
+        provider:
+          require_parameters: true
 
   - model_name: profile_synthesizer
     litellm_params:
-      # model: openrouter/google/gemini-2.5-flash-lite
       model: openrouter/nvidia/nemotron-3-nano-30b-a3b
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "https://openrouter.ai/api/v1"
-      max_parallel_requests: 2  # Limit concurrent requests
+      max_parallel_requests: 2
+      temperature: 0.3
+      supports_streaming: true
+      extra_body:
+        provider:
+          require_parameters: true
+
+  - model_name: papers_ranker
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-nano-30b-a3b
+      api_key: "os.environ/OPENROUTER_API_KEY"
+      api_base: "https://openrouter.ai/api/v1"
+      max_parallel_requests: 20
+      temperature: 0.0
+      supports_streaming: true
+      extra_body:
+        provider:
+          require_parameters: true
 

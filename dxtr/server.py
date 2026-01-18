@@ -1,11 +1,14 @@
+import asyncio
+import json
 import uvicorn
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic_ai.messages import ModelMessage
 
-from dxtr import set_session_id, get_model_settings
+from dxtr import set_session_id, get_model_settings, run_agent, create_event_queue, clear_event_queue
 from dxtr.agents.master import agent as main_agent
 
 
@@ -39,8 +42,9 @@ async def handle_query(query: str, user_id: str, session_id: str) -> str:
     # Get existing conversation history for this session
     history = _sessions.get(session_key, [])
 
-    # Run agent with message history and session metadata
-    result = await main_agent.run(
+    # Run agent with message history (streams to console in debug mode)
+    result = await run_agent(
+        main_agent,
         query,
         message_history=history,
         model_settings=get_model_settings(),
@@ -81,6 +85,55 @@ api = FastAPI(title="Multi-Agent Server", lifespan=lifespan)
 async def chat(request: ChatRequest):
     answer = await handle_query(request.query, request.user_id, request.session_id)
     return ChatResponse(answer=answer)
+
+
+@api.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE streaming endpoint - sends events as the agent works."""
+
+    async def event_generator():
+        # Create event queue for this request
+        queue = create_event_queue()
+
+        # Synthetic acknowledgment so user sees immediate feedback
+        yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
+
+        # Run agent in background task
+        agent_task = asyncio.create_task(
+            handle_query(request.query, request.user_id, request.session_id)
+        )
+
+        try:
+            while not agent_task.done():
+                try:
+                    # Wait for events with timeout so we can check if agent is done
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    continue
+
+            # Drain any remaining events
+            while not queue.empty():
+                event = await queue.get()
+                yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+
+            # Get final result and send as done event
+            answer = await agent_task
+            yield f"event: done\ndata: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            clear_event_queue()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @api.get("/health")
