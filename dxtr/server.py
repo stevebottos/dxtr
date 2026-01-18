@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from pydantic_ai.messages import ModelMessage
 
-from dxtr import set_session_id, get_model_settings
+from dxtr import set_session_id, get_model_settings, run_agent
 from dxtr.agents.master import agent as main_agent
 
 
@@ -39,8 +39,9 @@ async def handle_query(query: str, user_id: str, session_id: str) -> str:
     # Get existing conversation history for this session
     history = _sessions.get(session_key, [])
 
-    # Run agent with message history and session metadata
-    result = await main_agent.run(
+    # Run agent with message history (streams to console in debug mode)
+    result = await run_agent(
+        main_agent,
         query,
         message_history=history,
         model_settings=get_model_settings(),

@@ -30,7 +30,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["--config", "/app/config.yaml"]
+    command: ["--config", "/app/config.yaml", "--debug"]
 
 volumes:
   postgres_data:
