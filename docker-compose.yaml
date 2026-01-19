@@ -1,5 +1,5 @@
 services:
-  # The Database
+  # PostgreSQL database for LiteLLM
   db:
     image: postgres:16
     container_name: litellm_db
@@ -15,7 +15,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # The Proxy
+  # LiteLLM proxy server
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-latest
     container_name: litellm_proxy
@@ -31,6 +31,34 @@ services:
       db:
         condition: service_healthy
     command: ["--config", "/app/config.yaml", "--debug"]
+
+  # DXTR backend (only with --profile full)
+  dxtr:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dxtr
+    container_name: dxtr_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - LITELLM_BASE_URL=http://litellm:4000
+      - LITELLM_API_KEY=sk-1234
+      - DXTR_PROD=false
+    depends_on:
+      - litellm
+
+  # Frontend (only with --profile full)
+  frontend:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: dxtr_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - dxtr
 
 volumes:
   postgres_data:

@@ -14,8 +14,8 @@ DXTR_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_MODE = os.environ.get("DXTR_PROD", "false").lower() != "true"
 
 # === Shared LLM Config ===
-LITELLM_BASE_URL = "http://localhost:4000"
-LITELLM_API_KEY = "sk-1234"
+LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
+LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "sk-1234")
 
 # Models via LiteLLM proxy
 master = LiteLLMModel("openai/master", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)

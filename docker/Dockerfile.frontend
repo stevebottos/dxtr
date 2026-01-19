@@ -1,0 +1,43 @@
+# DXTR Frontend
+# Multi-stage build for React app
+
+# Build stage
+FROM node:20-slim AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY frontend/package.json frontend/package-lock.json* ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source
+COPY frontend/ .
+
+# Build
+RUN npm run build
+
+# Production stage
+FROM nginx:alpine
+
+# Copy built assets
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy nginx config for SPA routing
+# Note: /api proxies to dxtr service on port 8000
+RUN echo 'server { \
+    listen 80; \
+    location / { \
+        root /usr/share/nginx/html; \
+        try_files $uri $uri/ /index.html; \
+    } \
+    location /api { \
+        proxy_pass http://dxtr:8000; \
+        rewrite ^/api(.*)$ $1 break; \
+    } \
+}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

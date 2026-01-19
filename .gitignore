@@ -15,3 +15,8 @@ wheels/
 profile.md
 # Notes (not committed)
 notes/
+
+# Frontend
+node_modules/
+frontend/dist/
+.env.local
