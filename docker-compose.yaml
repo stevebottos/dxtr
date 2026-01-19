@@ -48,17 +48,5 @@ services:
     depends_on:
       - litellm
 
-  # Frontend (only with --profile full)
-  frontend:
-    profiles: ["full"]
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.frontend
-    container_name: dxtr_frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - dxtr
-
 volumes:
   postgres_data:
