@@ -10,7 +10,8 @@ AI research assistant for ML engineers. Work in progress.
 ## Setup
 
 ```bash
-export OPENROUTER_API_KEY=your_key_here
+cp .env.example .env
+# Edit .env with your keys
 ```
 
 ## Development

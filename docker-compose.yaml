@@ -5,7 +5,7 @@ services:
     container_name: litellm_db
     environment:
       POSTGRES_USER: llm_admin
-      POSTGRES_PASSWORD: password123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: litellm_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -25,8 +25,8 @@ services:
       - ./litellm_config.yaml:/app/config.yaml
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - LITELLM_MASTER_KEY=sk-1234
-      - DATABASE_URL=postgresql://llm_admin:password123@db:5432/litellm_db
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - DATABASE_URL=postgresql://llm_admin:${POSTGRES_PASSWORD}@db:5432/litellm_db
     depends_on:
       db:
         condition: service_healthy
@@ -43,7 +43,7 @@ services:
       - "8000:8000"
     environment:
       - LITELLM_BASE_URL=http://litellm:4000
-      - LITELLM_API_KEY=sk-1234
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
       - DXTR_PROD=false
     depends_on:
       - litellm
