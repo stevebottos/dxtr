@@ -12,6 +12,11 @@ export interface StreamEvent {
   answer?: string;
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 const SESSION_KEY = 'dxtr_session_id';
 
 export async function createSession(): Promise<Session> {
@@ -31,6 +36,21 @@ export async function createSession(): Promise<Session> {
 
 export function clearSession() {
   localStorage.removeItem(SESSION_KEY);
+}
+
+export async function uploadProfile(sessionId: string, content: string): Promise<void> {
+  const res = await fetch('/api/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: 'web-user',
+      session_id: sessionId,
+      content,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to upload profile');
+  }
 }
 
 export async function getHistory(sessionId: string): Promise<ChatMessage[]> {

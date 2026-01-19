@@ -1,4 +1,4 @@
-.PHONY: up up-dev down server frontend mock-conversation clear-queue build logs
+.PHONY: up up-dev down server frontend mock-conversation clear-queue build logs test-integration
 
 # =============================================================================
 # PRODUCTION (all services in Docker)
@@ -54,3 +54,11 @@ clear-queue:
 # Pull latest LiteLLM image
 pull-litellm:
 	docker pull docker.litellm.ai/berriai/litellm:main-latest
+
+# =============================================================================
+# TESTING
+# =============================================================================
+
+# Run integration tests (requires services running)
+test-integration:
+	pytest -m integration -v
