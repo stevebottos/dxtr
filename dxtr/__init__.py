@@ -113,6 +113,7 @@ async def run_agent(agent, prompt: str, **kwargs):
     async with agent.run_stream(prompt, **kwargs) as stream:
         async for text in stream.stream_text(delta=True):
             print(text, end="", flush=True)
+            publish("text", text)
         output = await stream.get_output()
 
     print(f"\n{'='*60}\n")

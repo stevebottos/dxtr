@@ -18,12 +18,14 @@ export function Chat({ session }: Props) {
   
   // Temporary logs for the current streaming response
   const [currentLogs, setCurrentLogs] = useState<StreamEvent[]>([])
-  
+  // Accumulating text from token stream
+  const [streamingText, setStreamingText] = useState('')
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, currentLogs])
+  }, [messages, currentLogs, streamingText])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -37,27 +39,34 @@ export function Chat({ session }: Props) {
     
     setIsStreaming(true)
     setCurrentLogs([])
+    setStreamingText('')
 
     try {
-      let finalAnswer = ''
+      let accumulatedText = ''
 
       for await (const event of streamChat(session.id, userMessage)) {
         if (event.type === 'tool' || event.type === 'status') {
           setCurrentLogs((prev) => [...prev, event])
+        } else if (event.type === 'text') {
+          accumulatedText += event.message || ''
+          setStreamingText(accumulatedText)
         } else if (event.type === 'done') {
-          finalAnswer = event.answer || ''
+          // Use streamed text if available, otherwise fall back to done.answer
+          if (!accumulatedText && event.answer) {
+            accumulatedText = event.answer
+          }
         } else if (event.type === 'error') {
           setCurrentLogs((prev) => [...prev, { type: 'error', message: event.message }])
-          finalAnswer = `Error: ${event.message}`
+          accumulatedText = `Error: ${event.message}`
         }
       }
 
       // Add the final assistant message with the accumulated logs
       setMessages((prev) => [
         ...prev,
-        { 
-          role: 'assistant', 
-          content: finalAnswer,
+        {
+          role: 'assistant',
+          content: accumulatedText,
           logs: [...currentLogs] // Capture the logs that happened during this turn
         },
       ])
@@ -72,7 +81,8 @@ export function Chat({ session }: Props) {
       ])
     } finally {
       setIsStreaming(false)
-      setCurrentLogs([]) // Clear live logs as they are now attached to the message
+      setCurrentLogs([])
+      setStreamingText('')
     }
   }
 
@@ -131,7 +141,7 @@ export function Chat({ session }: Props) {
         {/* Live Streaming Area */}
         {isStreaming && (
             <div style={{...styles.messageWrapper, alignItems: 'flex-start'}}>
-                
+
                 {/* Live Logs */}
                 {currentLogs.length > 0 && (
                   <div style={styles.logsContainer}>
@@ -143,17 +153,18 @@ export function Chat({ session }: Props) {
                         {log.message}
                       </div>
                     ))}
-                    <div style={styles.thinking}>Running...</div>
+                    {!streamingText && <div style={styles.thinking}>Running...</div>}
                   </div>
                 )}
-                
-                {/* Placeholder while thinking */}
-                {currentLogs.length === 0 && (
-                    <div style={{...styles.message, ...styles.assistantMessage}}>
-                        <div style={styles.messageRole}>DXTR</div>
-                        <div style={styles.messageContent}>Thinking...</div>
+
+                {/* Streaming text or thinking placeholder */}
+                <div style={{...styles.message, ...styles.assistantMessage}}>
+                    <div style={styles.messageRole}>DXTR</div>
+                    <div style={styles.messageContent}>
+                      {streamingText || 'Thinking...'}
+                      <span style={styles.cursor}>▊</span>
                     </div>
-                )}
+                </div>
             </div>
         )}
         <div ref={messagesEndRef} />
@@ -291,6 +302,11 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: '0.25rem',
     marginLeft: '1.4rem',
   },
+  cursor: {
+    animation: 'blink 1s step-end infinite',
+    marginLeft: '2px',
+    color: '#3b82f6',
+  },
   inputArea: {
     padding: '1rem 0',
     borderTop: '1px solid #333',
@@ -316,4 +332,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     cursor: 'pointer',
   },
+}
+
+// Add keyframes for cursor blink animation
+if (typeof document !== 'undefined' && !document.getElementById('chat-animations')) {
+  const style = document.createElement('style')
+  style.id = 'chat-animations'
+  style.textContent = '@keyframes blink { 50% { opacity: 0; } }'
+  document.head.appendChild(style)
 }

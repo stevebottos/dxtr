@@ -7,13 +7,15 @@ from dxtr import DXTR_DIR, master, load_system_prompt, get_model_settings, run_a
 from dxtr.agents.subagents import github_summarizer
 from dxtr.agents.subagents import profile_synthesis
 from dxtr.agents.subagents import papers_ranking
-from dxtr.agents.subagents.papers_ranking import util as papers_ranking_util
 from dxtr.agents.util import (
     get_available_dates,
     fetch_papers_for_date,
     download_papers as do_download_papers,
     load_papers_metadata,
     format_available_dates,
+    load_profile,
+    papers_list_to_dict,
+    format_ranking_results,
 )
 
 
@@ -263,7 +265,7 @@ async def rank_papers(request: RankPapersRequest) -> str:
     PREREQUISITE: Call get_papers first to verify papers are downloaded.
     """
     # Load user profile
-    profile = papers_ranking_util.load_profile()
+    profile = load_profile()
     if "No synthesized profile found" in profile:
         return profile
 
@@ -272,12 +274,12 @@ async def rank_papers(request: RankPapersRequest) -> str:
     if not papers_list:
         return f"No papers found for {request.date}. Use download_papers first."
 
-    papers_dict = papers_ranking_util.papers_list_to_dict(papers_list)
+    papers_dict = papers_list_to_dict(papers_list)
 
     # Rank papers in parallel
     results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
 
     # Format results
-    rankings_text = papers_ranking_util.format_ranking_results(results)
+    rankings_text = format_ranking_results(results)
 
     return f"Ranked {len(results)} papers\n\n{rankings_text}"

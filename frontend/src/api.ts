@@ -4,7 +4,7 @@ export interface Session {
   model: string;
 }
 
-export type EventType = 'tool' | 'status' | 'done' | 'error';
+export type EventType = 'tool' | 'status' | 'done' | 'error' | 'text';
 
 export interface StreamEvent {
   type: EventType;
