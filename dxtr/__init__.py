@@ -19,9 +19,15 @@ LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "sk-1234")
 
 # Models via LiteLLM proxy
 master = LiteLLMModel("openai/master", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
-github_summarizer = LiteLLMModel("openai/github_summarizer", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
-profile_synthesizer = LiteLLMModel("openai/profile_synthesizer", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
-papers_ranker = LiteLLMModel("openai/papers_ranker", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
+github_summarizer = LiteLLMModel(
+    "openai/github_summarizer", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY
+)
+profile_synthesizer = LiteLLMModel(
+    "openai/profile_synthesizer", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY
+)
+papers_ranker = LiteLLMModel(
+    "openai/papers_ranker", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY
+)
 
 
 # === Session Context ===
@@ -92,6 +98,7 @@ def load_system_prompt(file_path: Path) -> str:
 
 class StreamResult:
     """Wrapper to make streaming result compatible with AgentRunResult interface."""
+
     def __init__(self, output, stream):
         self.output = output
         self._stream = stream
@@ -132,6 +139,7 @@ def log_tool_usage(func):
         async def my_tool(request: MyRequest) -> str:
             ...
     """
+
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
         publish("tool", f"{func.__name__} called")
@@ -159,6 +167,7 @@ def requires(*tool_names: str):
         async def fetch_and_download_papers(...):
             ...
     """
+
     def decorator(func):
         prereq_list = ", ".join(tool_names)
         prereq_text = f"\n\nPREREQUISITE: Call {prereq_list} first."
@@ -168,4 +177,5 @@ def requires(*tool_names: str):
         func.__doc__ = original_doc.rstrip() + prereq_text
 
         return func
+
     return decorator

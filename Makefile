@@ -40,6 +40,9 @@ frontend:
 mock-conversation:
 	python mock_conversation.py
 
+deploy-dxtr:
+	docker tag dxtr-core:latest gcr.io/$$(GCLOUD_PROJECT_ID)/dxtr-core:latest
+	docker push gcr.io/$$(GCLOUD_PROJECT_ID)/dxtr-core:latest
 # =============================================================================
 # UTILITIES
 # =============================================================================

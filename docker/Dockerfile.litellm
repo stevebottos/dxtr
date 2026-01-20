@@ -1,0 +1,11 @@
+FROM docker.litellm.ai/berriai/litellm:main-latest
+
+# This needs to be different than the PORT used by DXTR, since we sidecar this container
+ENV LITELLM_PORT=4000
+
+# Copy config into the image
+COPY litellm_config.yaml /app/config.yaml
+
+# Bind to 0.0.0.0 and respect $PORT
+ENTRYPOINT ["sh", "-c"]
+CMD ["litellm --config /app/config.yaml --host 0.0.0.0 --port ${LITELLM_PORT} --debug"]
