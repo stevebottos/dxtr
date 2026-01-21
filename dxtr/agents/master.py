@@ -13,7 +13,6 @@ from dxtr.agents.util import (
     download_papers as do_download_papers,
     load_papers_metadata,
     format_available_dates,
-    load_profile,
     papers_list_to_dict,
     format_ranking_results,
 )
@@ -39,43 +38,55 @@ async def check_profile_state(ctx: RunContext[data_models.MasterRequest]) -> str
     as it's quite possible that you have already produced the necessary artifacts.
     """
     profile_folder = constants.profiles_dir.format(user_id=ctx.deps.user_id)
-    result = util.listdir_gcs(profile_folder)
-    available = "Available files in user profile:\n"
-    for f in ["synthesized_profile.md", "github_summary.json"]:
-        if f in result:
-            available = available + "\t{f}\n"
-    return available
+    result = await util.listdir_gcs(profile_folder)
+
+    if not len(result):
+        return "There are no database files for this user. Create their profile from scratch."
+    return f"Current database files for this user: {result}"
 
 
 @agent.tool
 @log_tool_usage
 async def get_github_summary(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Retrieves the user's github summary from their profile. If it's available, retrieve
+    """Retrieves the user's github summary from our database. If it's available, retrieve
     the profile before producing the profile summary. If it's not available, recompute it."""
     profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
-    content = util.read_json_from_gcs(str(profile_path / "github_summary.json"))
+    content = await util.read_json_from_gcs(str(profile_path / "github_summary.json"))
+
+    if not len(content):
+        print("NO GITHUB SUMMARY")
+        return "No github summary exists for the user in our database."
+
     return f"The user's github summary is as follows:\n{content}"
 
 
 @agent.tool
 @log_tool_usage
 async def get_user_profile(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Retrieves the user's github summary from their profile. If it's available, retrieve
-    the profile before producing the profile summary. If it's not available, recompute it."""
+    """Retrieves the user's synthesized profile from our database. If it is not listed as available by
+    check_profile_state, then we need to create it."""
     profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
-    content = util.read_json_from_gcs(str(profile_path / "synthesized_profile.md"))
+    content = await util.read_from_gcs(str(profile_path / "synthesized_profile.md"))
+
+    if not len(content):
+        print("NO USER DATA")
+        return "No github summary exists for the user in our database."
+
     return f"The user's profile is as follows:\n{content}"
 
 
 @agent.tool
 @log_tool_usage
-async def call_github_summarizer(
+async def create_github_summary(
     ctx: RunContext[data_models.MasterRequest], request: data_models.GithubSummarizerRequest
 ) -> str:
-    """Analyze a user's GitHub profile: clone pinned repos, read code, generate summary.
-    Check the profile state before calling me, as the summary might already be created.
+    """Analyze the repo or repos that a user has provided in order to summarize their skills/knowledge
+    based on the code. Should be called before attempting to create a profile.
     """
-    dep = data_models.GithubSummarizerRequest(base_url=request.base_url, **ctx.deps.model_dump())
+    if not len(request.repo_urls):
+        return "The user has not provided any repos to summarize."
+
+    dep = data_models.GithubSummarizerRequest(repo_urls=request.repo_urls, **ctx.deps.model_dump())
     result = await run_agent(
         github_summarizer.agent,
         "Analyze the user's GitHub profile.",
@@ -123,8 +134,8 @@ async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -
     with TemporaryDirectory() as tmp:
         profile_file = Path(tmp) / "synthesized_profile.md"
         profile_file.write_text(result.output)
-        util.upload_to_gcs(
-            profile_file,
+        await util.upload_to_gcs(
+            str(profile_file),
             str(
                 Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
                 / "synthesized_profile.md"
@@ -184,84 +195,94 @@ class RankPapersRequest(BaseModel):
 
 @agent.tool_plain
 @log_tool_usage
-async def get_papers(request: GetPapersRequest) -> str:
-    """Check available papers from the past week.
-
-    Returns a summary of dates and paper counts. Use this to see what papers
-    are already downloaded before asking the user to select dates.
-    """
-    available = get_available_dates(days_back=request.days_back)
-    return format_available_dates(available)
+async def get_papers() -> str:
+    """The user may ask about papers. This feature is not implemented yet."""
+    return "We can't handle papers yet - this feature is coming soon."
 
 
-@agent.tool_plain
-@log_tool_usage
-async def fetch_papers(request: FetchPapersRequest) -> str:
-    """Fetch paper metadata from HuggingFace for a date (does NOT download).
+# @agent.tool_plain
+# @log_tool_usage
+# async def get_papers(request: GetPapersRequest) -> str:
+#     """Check available papers from the past week.
 
-    Use this to see what papers are available on HuggingFace for a given date.
-    Returns paper titles and IDs. Does not save anything to disk.
-    """
-    papers = fetch_papers_for_date(request.date)
-
-    if not papers:
-        return f"No papers found on HuggingFace for {request.date}"
-
-    lines = [f"Found {len(papers)} papers for {request.date}:\n"]
-    for p in papers[:20]:  # Limit to first 20 for readability
-        lines.append(f"  - [{p['id']}] {p['title'][:60]}...")
-
-    if len(papers) > 20:
-        lines.append(f"\n  ... and {len(papers) - 20} more")
-
-    return "\n".join(lines)
+#     Returns a summary of dates and paper counts. Use this to see what papers
+#     are already downloaded before asking the user to select dates.
+#     """
+#     available = await get_available_dates(days_back=request.days_back)
+#     return format_available_dates(available)
 
 
-@agent.tool_plain
-@log_tool_usage
-async def download_papers(request: DownloadPapersRequest) -> str:
-    """Download papers from HuggingFace to local disk.
+# @agent.tool_plain
+# @log_tool_usage
+# async def fetch_papers(request: FetchPapersRequest) -> str:
+#     """Fetch paper metadata from HuggingFace for a date (does NOT download).
 
-    Saves paper metadata to ~/.dxtr/papers/{date}/. Only use this if
-    get_papers shows the papers aren't already downloaded.
+#     Use this to see what papers are available on HuggingFace for a given date.
+#     Returns paper titles and IDs. Does not save anything to disk.
+#     """
+#     papers = await fetch_papers_for_date(request.date)
 
-    PREREQUISITE: Call get_papers first to check what's already on disk.
-    """
-    downloaded = do_download_papers(
-        date=request.date,
-        paper_ids=request.paper_ids,
-        download_pdfs=False,
-    )
+#     if not papers:
+#         return f"No papers found on HuggingFace for {request.date}"
 
-    if not downloaded:
-        return f"No papers downloaded for {request.date}"
+#     lines = [f"Found {len(papers)} papers for {request.date}:\n"]
+#     for p in papers[:20]:  # Limit to first 20 for readability
+#         lines.append(f"  - [{p['id']}] {p['title'][:60]}...")
 
-    return f"Downloaded {len(downloaded)} papers for {request.date}"
+#     if len(papers) > 20:
+#         lines.append(f"\n  ... and {len(papers) - 20} more")
+
+#     return "\n".join(lines)
 
 
-@agent.tool_plain
-@log_tool_usage
-async def rank_papers(request: RankPapersRequest) -> str:
-    """Rank papers for a date against the user's synthesized profile.
+# @agent.tool_plain
+# @log_tool_usage
+# async def download_papers(request: DownloadPapersRequest) -> str:
+#     """Download papers from HuggingFace to local disk.
 
-    PREREQUISITE: Call get_papers first to verify papers are downloaded.
-    """
-    # Load user profile
-    profile = load_profile()
-    if "No synthesized profile found" in profile:
-        return profile
+#     Saves paper metadata to ~/.dxtr/papers/{date}/. Only use this if
+#     get_papers shows the papers aren't already downloaded.
 
-    # Load papers and convert to dict
-    papers_list = load_papers_metadata(request.date)
-    if not papers_list:
-        return f"No papers found for {request.date}. Use download_papers first."
+#     PREREQUISITE: Call get_papers first to check what's already on disk.
+#     """
+#     downloaded = await do_download_papers(
+#         date=request.date,
+#         paper_ids=request.paper_ids,
+#         download_pdfs=False,
+#     )
 
-    papers_dict = papers_list_to_dict(papers_list)
+#     if not downloaded:
+#         return f"No papers downloaded for {request.date}"
 
-    # Rank papers in parallel
-    results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
+#     return f"Downloaded {len(downloaded)} papers for {request.date}"
 
-    # Format results
-    rankings_text = format_ranking_results(results)
 
-    return f"Ranked {len(results)} papers\n\n{rankings_text}"
+# @agent.tool_plain
+# @log_tool_usage
+# async def rank_papers(request: RankPapersRequest) -> str:
+#     """Rank papers for a date against the user's synthesized profile.
+
+#     PREREQUISITE: Call get_papers first to verify papers are downloaded.
+#     """
+#     # Load user profile
+#     # Note: This call is known to be missing user_id in the original code.
+#     # Leaving it as is but awaiting it to match async definition.
+#     # It will likely raise TypeError at runtime if called.
+#     profile = await load_profile()
+#     if "No synthesized profile found" in profile:
+#         return profile
+
+#     # Load papers and convert to dict
+#     papers_list = await load_papers_metadata(request.date)
+#     if not papers_list:
+#         return f"No papers found for {request.date}. Use download_papers first."
+
+#     papers_dict = papers_list_to_dict(papers_list)
+
+#     # Rank papers in parallel
+#     results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
+
+#     # Format results
+#     rankings_text = format_ranking_results(results)
+
+#     return f"Ranked {len(results)} papers\n\n{rankings_text}"

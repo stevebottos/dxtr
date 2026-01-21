@@ -32,52 +32,24 @@ agent = Agent(
 
 @agent.tool
 @log_tool_usage
-async def get_pinned_repos(ctx: RunContext[data_models.GithubSummarizerRequest]) -> list[str]:
-    """Fetch pinned repository URLs from the user's GitHub profile.
-    If you have already called this function in your history, don't worry about calling it again."""
-    github_url = ctx.deps.base_url
-
-    if not is_profile_url(github_url):
-        return [f"Error: Not a valid GitHub profile URL: {github_url}"]
-
-    html = fetch_profile_html(github_url)
-    if not html:
-        return ["Error: Could not fetch GitHub profile page"]
-
-    pinned_repos = extract_pinned_repos(html)
-    if not pinned_repos:
-        return ["No pinned repositories found on profile"]
-
-    return pinned_repos
-
-
-class SummarizeReposRequest(BaseModel):
-    repo_urls: list[str] = Field(
-        description="List of GitHub repository URLs to clone.",
-        examples=[["https://github.com/user/repo1", "https://github.com/user/repo2"]],
-    )
-
-
-@agent.tool
-@log_tool_usage
-async def summarize_repos(
-    ctx: RunContext[data_models.GithubSummarizerRequest], request: SummarizeReposRequest
-) -> str:
+async def summarize_repos(ctx: RunContext[data_models.GithubSummarizerRequest]) -> str:
     """Download and analyze the user's github content, required for a complete github summary."""
+    repo_urls = ctx.deps.repo_urls
 
     with TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
         cloned = []
-        for repo_url in request.repo_urls:
-            result = clone_repo(repo_url, tmp)
+        for repo_url in repo_urls:
+
+            result = await clone_repo(repo_url, tmp)
             if result["success"]:
                 cloned.append(result["path"])
 
         if not cloned:
             return "No repositories could be cloned"
 
-        print(f"{len(cloned)}/{len(request.repo_urls)} successful.")
+        print(f"{len(cloned)}/{len(repo_urls)} successful.")
         print(f"Summarizing {len(cloned)} repos...")
 
         all_files = []
@@ -149,7 +121,7 @@ async def summarize_repos(
 
         summary_file = tmp / "github_summary.json"
         summary_file.write_text(json.dumps(all_summaries, indent=2))
-        util.upload_to_gcs(
+        await util.upload_to_gcs(
             str(summary_file),
             str(
                 Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))

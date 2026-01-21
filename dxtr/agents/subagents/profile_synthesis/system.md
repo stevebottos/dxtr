@@ -33,10 +33,10 @@ Create a markdown profile with these sections:
 
 ## Interest Signals
 
-### HIGH PRIORITY (score 4-5)
+### HIGH PRIORITY (score 8 to 10)
 - [specific keyword or topic]
 
-### LOW PRIORITY (score 1-2)
+### LOW PRIORITY (score 1 to 5)
 - [specific keyword or topic]
 
 ## Constraints

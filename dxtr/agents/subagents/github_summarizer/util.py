@@ -57,110 +57,121 @@ def _get_repo_path(owner: str, repo: str, base_dir: Path) -> Path:
     return base_dir / "repos" / owner / repo
 
 
-def clone_repo(url: str, base_dir: Path) -> dict:
+import asyncio
+
+
+async def clone_repo(url: str, base_dir: Path) -> dict:
     """
     Clone a GitHub repository.
 
     Uses shallow clone (--depth 1) and removes .git directory after cloning.
     Uses caching - if the repo is already cloned, returns success without re-cloning.
     """
-    parsed = _parse_repo_url(url)
-    if not parsed:
-        return {
-            "success": False,
-            "path": None,
-            "message": f"Invalid GitHub repository URL: {url}",
-            "url": url,
-        }
 
-    owner, repo = parsed
-    repo_path = _get_repo_path(owner, repo, base_dir)
+    def _clone():
+        parsed = _parse_repo_url(url)
+        if not parsed:
+            return {
+                "success": False,
+                "path": None,
+                "message": f"Invalid GitHub repository URL: {url}",
+                "url": url,
+            }
 
-    # Check if already cloned
-    if repo_path.exists() and repo_path.is_dir():
-        return {
-            "success": True,
-            "path": str(repo_path),
-            "message": "Repository already cloned (cached)",
-            "url": url,
-            "owner": owner,
-            "repo": repo,
-        }
+        owner, repo = parsed
+        repo_path = _get_repo_path(owner, repo, base_dir)
 
-    # Create parent directory
-    repo_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        print(f"  [Cloning {owner}/{repo}...]")
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(repo_path)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-
-        if result.returncode == 0:
-            # Remove .git directory to save space
-            git_dir = repo_path / ".git"
-            if git_dir.exists():
-                shutil.rmtree(git_dir)
-
+        # Check if already cloned
+        if repo_path.exists() and repo_path.is_dir():
             return {
                 "success": True,
                 "path": str(repo_path),
-                "message": f"Successfully cloned {owner}/{repo}",
+                "message": "Repository already cloned (cached)",
                 "url": url,
                 "owner": owner,
                 "repo": repo,
             }
-        else:
+
+        # Create parent directory
+        repo_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            print(f"  [Cloning {owner}/{repo}...]")
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", url, str(repo_path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode == 0:
+                # Remove .git directory to save space
+                git_dir = repo_path / ".git"
+                if git_dir.exists():
+                    shutil.rmtree(git_dir)
+
+                return {
+                    "success": True,
+                    "path": str(repo_path),
+                    "message": f"Successfully cloned {owner}/{repo}",
+                    "url": url,
+                    "owner": owner,
+                    "repo": repo,
+                }
+            else:
+                return {
+                    "success": False,
+                    "path": None,
+                    "message": f"Git clone failed: {result.stderr}",
+                    "url": url,
+                }
+
+        except subprocess.TimeoutExpired:
             return {
                 "success": False,
                 "path": None,
-                "message": f"Git clone failed: {result.stderr}",
+                "message": "Clone timeout (exceeded 120s)",
+                "url": url,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "path": None,
+                "message": f"Clone error: {str(e)}",
                 "url": url,
             }
 
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "path": None,
-            "message": "Clone timeout (exceeded 120s)",
-            "url": url,
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "path": None,
-            "message": f"Clone error: {str(e)}",
-            "url": url,
-        }
+    return await asyncio.to_thread(_clone)
 
 
-def fetch_profile_html(url: str) -> str | None:
+async def fetch_profile_html(url: str) -> str | None:
     """Fetch raw HTML from a GitHub profile URL."""
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (DXTR Profile Agent)"}
-        req = urllib.request.Request(url, headers=headers)
 
-        with urllib.request.urlopen(req, timeout=10) as response:
-            content_bytes = response.read()
-            content_type = response.headers.get("Content-Type", "")
+    def _fetch():
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (DXTR Profile Agent)"}
+            req = urllib.request.Request(url, headers=headers)
 
-            encoding = "utf-8"
-            if "charset=" in content_type:
-                encoding = content_type.split("charset=")[-1].split(";")[0].strip()
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content_bytes = response.read()
+                content_type = response.headers.get("Content-Type", "")
 
-            try:
-                html = content_bytes.decode(encoding)
-            except UnicodeDecodeError:
-                html = content_bytes.decode("utf-8", errors="ignore")
+                encoding = "utf-8"
+                if "charset=" in content_type:
+                    encoding = content_type.split("charset=")[-1].split(";")[0].strip()
 
-            return html
+                try:
+                    html = content_bytes.decode(encoding)
+                except UnicodeDecodeError:
+                    html = content_bytes.decode("utf-8", errors="ignore")
 
-    except Exception as e:
-        print(f"  [Error fetching profile HTML: {e}]")
-        return None
+                return html
+
+        except Exception as e:
+            print(f"  [Error fetching profile HTML: {e}]")
+            return None
+
+    return await asyncio.to_thread(_fetch)
 
 
 def is_profile_url(url: str) -> bool:

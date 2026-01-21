@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import time
+import asyncio
 
 import requests
 from dxtr import constants, util
@@ -18,37 +19,55 @@ ARXIV_PDF_URL = "https://arxiv.org/pdf/{id}"
 HF_DAILY_PAPERS_URL = "https://huggingface.co/api/daily_papers"
 
 
-def get_available_dates(days_back: int = 7) -> dict[str, int]:
+async def get_available_dates(days_back: int = 7) -> dict[str, int]:
     """Return {date: paper_count} for last N days that have downloaded papers."""
     available = {}
 
     for i in range(days_back):
         date = (datetime.today() - timedelta(days=i)).strftime("%Y-%m-%d")
-        date_dir = constants.papers_dir.format(date)
+        date_dir_str = constants.papers_dir.format(date=date)
 
-        if date_dir.exists():
-            # Count papers (subdirectories with metadata.json)
-            paper_count = sum(
-                1 for p in date_dir.iterdir() if p.is_dir() and (p / "metadata.json").exists()
-            )
+        # Check GCS
+        try:
+            # We list the directory. If it returns items, it exists.
+            items = await util.listdir_gcs(date_dir_str)
+            # Count subdirectories that likely contain papers (or just count items if structure is flat?)
+            # download_papers uploads as: papers_dir/paper_id/metadata.json
+            # listdir_gcs returns 'paper_id/' for directories.
+
+            paper_count = 0
+            for item in items:
+                # If item is a directory (ends with /), check if it has metadata?
+                # listdir_gcs returns names relative to prefix.
+                # If we have 'paper_id/', we assume it's a paper.
+                if item.endswith("/"):
+                    paper_count += 1
+
             if paper_count > 0:
                 available[date] = paper_count
+        except Exception as e:
+            print(f"Error checking date {date}: {e}")
 
     return available
 
 
-def fetch_papers_for_date(date: str) -> list[dict]:
+async def fetch_papers_for_date(date: str) -> list[dict]:
     """Fetch paper metadata from HuggingFace for a given date.
 
     Returns list of paper metadata dicts with id, title, summary, etc.
     """
-    try:
-        response = requests.get(f"{HF_DAILY_PAPERS_URL}?date={date}", timeout=30)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        print(f"HF API Error: {e}")
-        return []
+
+    def _fetch():
+        try:
+            response = requests.get(f"{HF_DAILY_PAPERS_URL}?date={date}", timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except Exception as e:
+            print(f"HF API Error: {e}")
+            return []
+
+    data = await asyncio.to_thread(_fetch)
 
     if not isinstance(data, list):
         print("Invalid HF response")
@@ -75,7 +94,7 @@ def fetch_papers_for_date(date: str) -> list[dict]:
     return papers
 
 
-def download_papers(
+async def download_papers(
     date: str,
     paper_ids: list[str] | None = None,
     download_pdfs: bool = True,
@@ -93,7 +112,7 @@ def download_papers(
     upload_bucket_root = Path(constants.papers_dir.format(date=date))
 
     print(f"Fetching papers for {date}...")
-    papers = fetch_papers_for_date(date)
+    papers = await fetch_papers_for_date(date)
     print(f"{len(papers)} papers found for {date}")
     if not papers:
         return []
@@ -123,41 +142,63 @@ def download_papers(
                 pdf_path = tmp_out_dir / "paper.pdf"
                 if not pdf_path.exists():
                     try:
-                        r = requests.get(ARXIV_PDF_URL.format(id=paper_id), timeout=60)
-                        if r.status_code == 200:
-                            pdf_path.write_bytes(r.content)
+
+                        def _download_pdf():
+                            r = requests.get(ARXIV_PDF_URL.format(id=paper_id), timeout=60)
+                            if r.status_code == 200:
+                                pdf_path.write_bytes(r.content)
+                                return True
+                            return False
+
+                        success = await asyncio.to_thread(_download_pdf)
+                        if success:
                             print(f"Downloaded PDF: {paper_id}")
                             downloaded.append(pdf_path)
-                            time.sleep(1)  # Rate limit
+                            await asyncio.sleep(1)  # Rate limit
                         else:
-                            print(f"PDF download failed {paper_id}: {r.status_code}")
+                            print(f"PDF download failed {paper_id}")
                     except Exception as e:
                         print(f"PDF error {paper_id}: {e}")
 
             # Rate limit batch processing
             if (i + 1) % 10 == 0:
-                time.sleep(2)
+                await asyncio.sleep(2)
 
         for f in downloaded:
+            # f is like /tmp/.../paper_id/metadata.json
+            # We want to upload to papers_dir/date/paper_id/metadata.json
+
+            # f.parts[-2:] gives ('paper_id', 'metadata.json')
             upload_prefix = "/".join(f.parts[-2:])
-            util.upload_to_gcs(str(f), str(upload_bucket_root / upload_prefix))
+            full_dest = str(upload_bucket_root / upload_prefix)
+            await util.upload_to_gcs(str(f), full_dest)
 
     return downloaded
 
 
-def load_papers_metadata(date: str) -> list[dict]:
+async def load_papers_metadata(date: str) -> list[dict]:
     """Load all metadata.json files for a date.
 
     Returns list of paper metadata dicts.
     """
-    date_dir = Path(constants.papers_dir.format(date=date))
-    data = util.listdir_gcs(str(date_dir))
+    date_dir_str = constants.papers_dir.format(date=date)
+    data = await util.listdir_gcs(date_dir_str)
 
     papers = []
     for paper_dir in data:
-        print(date_dir / paper_dir / "metadata.json")
-        metadata = json.loads(util.read_from_gcs(str(date_dir / paper_dir / "metadata.json")))
-        papers.append(metadata)
+        # paper_dir is like "paper_id/"
+        if not paper_dir.endswith("/"):
+            continue
+
+        meta_path = f"{date_dir_str}/{paper_dir}metadata.json"
+        # remove double slashes if any
+        meta_path = meta_path.replace("//", "/")
+
+        print(f"Loading {meta_path}")
+        content = await util.read_from_gcs(meta_path)
+        if content:
+            metadata = json.loads(content)
+            papers.append(metadata)
 
     return papers
 
@@ -172,12 +213,6 @@ def format_available_dates(available: dict[str, int]) -> str:
         lines.append(f"  {date}: {count} papers")
 
     return "\n".join(lines)
-
-
-def load_profile(user_id: str) -> str:
-    """Load the user's synthesized profile."""
-    profile_path = Path(constants.profiles_dir.format(user_id=user_id)) / "profile.md"
-    return util.read_from_gcs(str(profile_path))
 
 
 def papers_list_to_dict(papers: list[dict]) -> dict[str, dict]:
