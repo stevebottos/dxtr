@@ -1,17 +1,18 @@
 """Paper download and loading utilities for the master agent."""
 
+from tempfile import TemporaryDirectory
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import time
 
 import requests
+from dxtr import constants, util
 
-from dxtr import DXTR_DIR
-
-
-PAPERS_DIR = DXTR_DIR / "papers"
-PAPERS_DIR.mkdir(parents=True, exist_ok=True)
+# TODO: This won't scale because many people could invoke papers downloading tools
+# at the same time, which wouldn't really be a crazy issue but it should be taken care of
+# TODO: Error handling
+# TODO: multithread
 
 ARXIV_PDF_URL = "https://arxiv.org/pdf/{id}"
 HF_DAILY_PAPERS_URL = "https://huggingface.co/api/daily_papers"
@@ -23,13 +24,12 @@ def get_available_dates(days_back: int = 7) -> dict[str, int]:
 
     for i in range(days_back):
         date = (datetime.today() - timedelta(days=i)).strftime("%Y-%m-%d")
-        date_dir = PAPERS_DIR / date
+        date_dir = constants.papers_dir.format(date)
 
         if date_dir.exists():
             # Count papers (subdirectories with metadata.json)
             paper_count = sum(
-                1 for p in date_dir.iterdir()
-                if p.is_dir() and (p / "metadata.json").exists()
+                1 for p in date_dir.iterdir() if p.is_dir() and (p / "metadata.json").exists()
             )
             if paper_count > 0:
                 available[date] = paper_count
@@ -61,14 +61,16 @@ def fetch_papers_for_date(date: str) -> list[dict]:
         paper_data = item.get("paper", item)
         paper_id = paper_data.get("id")
         if paper_id:
-            papers.append({
-                "id": paper_id,
-                "title": paper_data.get("title", ""),
-                "summary": paper_data.get("summary", ""),
-                "authors": paper_data.get("authors", []),
-                "publishedAt": paper_data.get("publishedAt", ""),
-                "upvotes": item.get("upvotes", 0),
-            })
+            papers.append(
+                {
+                    "id": paper_id,
+                    "title": paper_data.get("title", ""),
+                    "summary": paper_data.get("summary", ""),
+                    "authors": paper_data.get("authors", []),
+                    "publishedAt": paper_data.get("publishedAt", ""),
+                    "upvotes": item.get("upvotes", 0),
+                }
+            )
 
     return papers
 
@@ -76,7 +78,7 @@ def fetch_papers_for_date(date: str) -> list[dict]:
 def download_papers(
     date: str,
     paper_ids: list[str] | None = None,
-    download_pdfs: bool = False,
+    download_pdfs: bool = True,
 ) -> list[Path]:
     """Download papers from HuggingFace/ArXiv for a date.
 
@@ -88,14 +90,12 @@ def download_papers(
     Returns:
         List of paths to paper directories
     """
-    out_dir = PAPERS_DIR / date
-    out_dir.mkdir(parents=True, exist_ok=True)
+    upload_bucket_root = Path(constants.papers_dir.format(date=date))
 
     print(f"Fetching papers for {date}...")
     papers = fetch_papers_for_date(date)
-
+    print(f"{len(papers)} papers found for {date}")
     if not papers:
-        print(f"No papers found for {date}")
         return []
 
     # Filter to specific IDs if provided
@@ -105,37 +105,43 @@ def download_papers(
     downloaded = []
 
     # Process in batches with rate limiting
-    for i, paper in enumerate(papers):
-        paper_id = paper["id"]
-        paper_dir = out_dir / paper_id
-        paper_dir.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory() as tmp:
+        tmp_out_dir_root = Path(tmp)
 
-        # Save metadata
-        metadata_path = paper_dir / "metadata.json"
-        metadata_path.write_text(json.dumps(paper, indent=2, default=str))
+        for i, paper in enumerate(papers):
+            paper_id = paper["id"]
+            tmp_out_dir = tmp_out_dir_root / paper_id
+            tmp_out_dir.mkdir(parents=True)
 
-        # Download PDF if requested
-        if download_pdfs:
-            pdf_path = paper_dir / "paper.pdf"
-            if not pdf_path.exists():
-                try:
-                    r = requests.get(ARXIV_PDF_URL.format(id=paper_id), timeout=60)
-                    if r.status_code == 200:
-                        pdf_path.write_bytes(r.content)
-                        print(f"Downloaded PDF: {paper_id}")
-                        time.sleep(1)  # Rate limit
-                    else:
-                        print(f"PDF download failed {paper_id}: {r.status_code}")
-                except Exception as e:
-                    print(f"PDF error {paper_id}: {e}")
+            # Save metadata
+            metadata_path = tmp_out_dir / "metadata.json"
+            metadata_path.write_text(json.dumps(paper, indent=2, default=str))
+            downloaded.append(metadata_path)
 
-        downloaded.append(paper_dir)
+            # Download PDF if requested
+            if download_pdfs:
+                pdf_path = tmp_out_dir / "paper.pdf"
+                if not pdf_path.exists():
+                    try:
+                        r = requests.get(ARXIV_PDF_URL.format(id=paper_id), timeout=60)
+                        if r.status_code == 200:
+                            pdf_path.write_bytes(r.content)
+                            print(f"Downloaded PDF: {paper_id}")
+                            downloaded.append(pdf_path)
+                            time.sleep(1)  # Rate limit
+                        else:
+                            print(f"PDF download failed {paper_id}: {r.status_code}")
+                    except Exception as e:
+                        print(f"PDF error {paper_id}: {e}")
 
-        # Rate limit batch processing
-        if (i + 1) % 10 == 0:
-            time.sleep(1)
+            # Rate limit batch processing
+            if (i + 1) % 10 == 0:
+                time.sleep(2)
 
-    print(f"Downloaded {len(downloaded)} papers for {date}")
+        for f in downloaded:
+            upload_prefix = "/".join(f.parts[-2:])
+            util.upload_to_gcs(str(f), str(upload_bucket_root / upload_prefix))
+
     return downloaded
 
 
@@ -144,24 +150,14 @@ def load_papers_metadata(date: str) -> list[dict]:
 
     Returns list of paper metadata dicts.
     """
-    date_dir = PAPERS_DIR / date
-
-    if not date_dir.exists():
-        return []
+    date_dir = Path(constants.papers_dir.format(date=date))
+    data = util.listdir_gcs(str(date_dir))
 
     papers = []
-    for paper_dir in date_dir.iterdir():
-        if not paper_dir.is_dir():
-            continue
-
-        metadata_path = paper_dir / "metadata.json"
-        if metadata_path.exists():
-            try:
-                metadata = json.loads(metadata_path.read_text())
-                papers.append(metadata)
-            except json.JSONDecodeError:
-                print(f"Invalid metadata.json in {paper_dir}")
-                continue
+    for paper_dir in data:
+        print(date_dir / paper_dir / "metadata.json")
+        metadata = json.loads(util.read_from_gcs(str(date_dir / paper_dir / "metadata.json")))
+        papers.append(metadata)
 
     return papers
 
@@ -178,20 +174,15 @@ def format_available_dates(available: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
-def load_profile() -> str:
+def load_profile(user_id: str) -> str:
     """Load the user's synthesized profile."""
-    profile_path = DXTR_DIR / "synthesized_profile.md"
-    if not profile_path.exists():
-        return "No synthesized profile found. Create one first."
-    return profile_path.read_text()
+    profile_path = Path(constants.profiles_dir.format(user_id=user_id)) / "profile.md"
+    return util.read_from_gcs(str(profile_path))
 
 
 def papers_list_to_dict(papers: list[dict]) -> dict[str, dict]:
     """Convert list of papers to dict keyed by ID."""
-    return {
-        p["id"]: {"title": p.get("title", ""), "summary": p.get("summary", "")}
-        for p in papers
-    }
+    return {p["id"]: {"title": p.get("title", ""), "summary": p.get("summary", "")} for p in papers}
 
 
 def format_ranking_results(results: list[dict]) -> str:

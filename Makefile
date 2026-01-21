@@ -6,32 +6,29 @@
 
 # Start all services in Docker
 up:
-	docker compose --profile full up --build
+	docker compose up --build
 
 # Stop all services
 down:
-	docker compose --profile full down
+	docker compose down
 
 # Build all Docker images
 build:
-	docker compose --profile full build
+	docker compose build
+
+push:
+	docker compose push
 
 # View logs from all services
 logs:
 	docker compose --profile full logs -f
 
-# =============================================================================
-# DEVELOPMENT (infrastructure in Docker, code from source)
-# =============================================================================
 
-# Start infrastructure only (db + litellm)
-up-dev:
-	docker compose up
-
-# Start dxtr server from source (port 8000)
 server:
 	cd dxtr && python server.py
 
+litellm:
+	docker compose up litellm
 # Start frontend dev server (port 3000)
 frontend:
 	cd frontend && npm install && npm run dev

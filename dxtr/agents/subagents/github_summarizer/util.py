@@ -5,42 +5,10 @@ import subprocess
 import shutil
 
 
-def find_python_files(repo_path: Path, max_files: int = 100) -> list[Path]:
-    """Find all Python files in a repository."""
-    python_files = []
-
-    exclude_patterns = [
-        "*/test/*",
-        "*/tests/*",
-        "*/__pycache__/*",
-        "*/venv/*",
-        "*/env/*",
-        "*/.venv/*",
-        "*/node_modules/*",
-        "*/.git/*",
-        "*/dist/*",
-        "*/build/*",
-        "*/.pytest_cache/*",
-    ]
-
-    for py_file in repo_path.rglob("*.py"):
-        if any(py_file.match(pattern) for pattern in exclude_patterns):
-            continue
-
-        python_files.append(py_file)
-
-        if len(python_files) >= max_files:
-            break
-
-    return sorted(python_files)
-
-
 def extract_pinned_repos(html_content: str) -> list[str]:
     """Extract pinned repository URLs from a GitHub profile page HTML."""
     pattern = r'data-hydro-click="[^"]*PINNED_REPO[^"]*"[^>]*href="(/[^/"]+/[^/"]+)"'
-    pattern_reverse = (
-        r'href="(/[^/"]+/[^/"]+)"[^>]*data-hydro-click="[^"]*PINNED_REPO[^"]*"'
-    )
+    pattern_reverse = r'href="(/[^/"]+/[^/"]+)"[^>]*data-hydro-click="[^"]*PINNED_REPO[^"]*"'
 
     repos = []
     seen = set()

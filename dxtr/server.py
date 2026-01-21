@@ -8,9 +8,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic_ai.messages import ModelMessage
 
-from dxtr import set_session_id, get_model_settings, run_agent, create_event_queue, clear_event_queue
+from dxtr import (
+    set_session_id,
+    get_model_settings,
+    run_agent,
+    create_event_queue,
+    clear_event_queue,
+)
 from dxtr.agents.master import agent as main_agent
-
+from dxtr import data_models
 
 # =============================================================================
 # MEMORY (simple session-based message history)
@@ -32,43 +38,9 @@ def get_session_key(user_id: str, session_id: str) -> str:
     return f"{user_id}:{session_id}"
 
 
-async def handle_query(query: str, user_id: str, session_id: str) -> str:
-    """Process a query through the main agent with conversation history."""
-    session_key = get_session_key(user_id, session_id)
-
-    # Set session context for LiteLLM tracing
-    set_session_id(session_id)
-
-    # Get existing conversation history for this session
-    history = _sessions.get(session_key, [])
-
-    # Run agent with message history (streams to console in debug mode)
-    result = await run_agent(
-        main_agent,
-        query,
-        message_history=history,
-        model_settings=get_model_settings(),
-    )
-
-    # Store updated history
-    _sessions[session_key] = result.all_messages()
-
-    return result.output
-
-
 # =============================================================================
 # FASTAPI SERVER
 # =============================================================================
-
-
-class ChatRequest(BaseModel):
-    user_id: str
-    session_id: str
-    query: str
-
-
-class ChatResponse(BaseModel):
-    answer: str
 
 
 @asynccontextmanager
@@ -80,15 +52,40 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(title="Multi-Agent Server", lifespan=lifespan)
 
+# Don't think we'll ever need this again
+# @api.post("/chat", response_model=data_models.data_models.MasterResponse)
+# async def chat(request: data_models.MasterRequest):
+#     answer = await handle_query(request.query, request.user_id, request.session_id)
+#     return data_models.MasterResponse(answer=answer)
 
-@api.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    answer = await handle_query(request.query, request.user_id, request.session_id)
-    return ChatResponse(answer=answer)
+
+async def handle_query(request: data_models.MasterRequest) -> str:
+    """Process a query through the main agent with conversation history."""
+    session_key = get_session_key(request.user_id, request.session_id)
+
+    # Set session context for LiteLLM tracing
+    set_session_id(request.session_id)
+
+    # Get existing conversation history for this session
+    history = _sessions.get(session_key, [])
+
+    # Run agent with message history (streams to console in debug mode)
+    result = await run_agent(
+        main_agent,
+        request.query,
+        deps=request,
+        message_history=history,
+        model_settings=get_model_settings(),
+    )
+
+    # Store updated history
+    _sessions[session_key] = result.all_messages()
+
+    return result.output
 
 
 @api.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(request: data_models.MasterRequest):
     """SSE streaming endpoint - sends events as the agent works."""
 
     async def event_generator():
@@ -99,9 +96,7 @@ async def chat_stream(request: ChatRequest):
         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
 
         # Run agent in background task
-        agent_task = asyncio.create_task(
-            handle_query(request.query, request.user_id, request.session_id)
-        )
+        agent_task = asyncio.create_task(handle_query(request))
 
         try:
             while not agent_task.done():

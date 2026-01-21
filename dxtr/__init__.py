@@ -3,19 +3,16 @@ from contextvars import ContextVar
 from functools import wraps
 import asyncio
 import os
-
+import time
 from pydantic_ai_litellm import LiteLLMModel
-
-
-DXTR_DIR = Path.home() / ".dxtr"
-DXTR_DIR.mkdir(parents=True, exist_ok=True)
+from dxtr import data_models
 
 # Debug mode (default True unless DXTR_PROD=true)
 DEBUG_MODE = os.environ.get("DXTR_PROD", "false").lower() != "true"
 
 # === Shared LLM Config ===
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
-LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "sk-1234")
+LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY")
 
 # Models via LiteLLM proxy
 master = LiteLLMModel("openai/master", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
@@ -107,17 +104,17 @@ class StreamResult:
         return self._stream.all_messages()
 
 
-async def run_agent(agent, prompt: str, **kwargs):
+async def run_agent(agent, query: data_models.MasterRequest, deps, **kwargs):
     """Run an agent, streaming to console in debug mode."""
     if not DEBUG_MODE:
-        return await agent.run(prompt, **kwargs)
+        return await agent.run(query, deps=deps, **kwargs)
 
     # Debug: stream output to console
     print(f"\n{'='*60}")
     print(f"[STREAM] {agent.name or 'agent'}")
     print(f"{'='*60}", flush=True)
 
-    async with agent.run_stream(prompt, **kwargs) as stream:
+    async with agent.run_stream(query, deps=deps, **kwargs) as stream:
         async for text in stream.stream_text(delta=True):
             print(text, end="", flush=True)
             publish("text", text)
@@ -142,8 +139,11 @@ def log_tool_usage(func):
 
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
-        publish("tool", f"{func.__name__} called")
-        return await func(*args, **kwargs)
+        publish("tool", f"{func.__name__} started.")
+        _t = time.time()
+        ret = await func(*args, **kwargs)
+        publish("tool", f"{func.__name__} finished, {time.time() - _t} elapsed.")
+        return ret
 
     @wraps(func)
     def sync_wrapper(*args, **kwargs):
@@ -153,29 +153,3 @@ def log_tool_usage(func):
     if asyncio.iscoroutinefunction(func):
         return async_wrapper
     return sync_wrapper
-
-
-def requires(*tool_names: str):
-    """Decorator that documents prerequisite tools in the docstring.
-
-    The model will see "PREREQUISITE: Call X first" in the tool description,
-    guiding it to check state before calling this tool.
-
-    Usage:
-        @agent.tool_plain
-        @requires("get_papers")
-        async def fetch_and_download_papers(...):
-            ...
-    """
-
-    def decorator(func):
-        prereq_list = ", ".join(tool_names)
-        prereq_text = f"\n\nPREREQUISITE: Call {prereq_list} first."
-
-        # Augment docstring
-        original_doc = func.__doc__ or ""
-        func.__doc__ = original_doc.rstrip() + prereq_text
-
-        return func
-
-    return decorator

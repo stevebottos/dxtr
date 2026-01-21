@@ -1,9 +1,9 @@
 from pathlib import Path
-
+from tempfile import TemporaryDirectory
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 
-from dxtr import DXTR_DIR, master, load_system_prompt, get_model_settings, run_agent, log_tool_usage
+from dxtr import master, load_system_prompt, get_model_settings, run_agent, log_tool_usage
 from dxtr.agents.subagents import github_summarizer
 from dxtr.agents.subagents import profile_synthesis
 from dxtr.agents.subagents import papers_ranking
@@ -18,81 +18,115 @@ from dxtr.agents.util import (
     format_ranking_results,
 )
 
+from dxtr import util, constants, data_models
 
 SYSTEM_PROMPT = load_system_prompt(Path(__file__).parent / "system.md")
 
-agent = Agent(master, system_prompt=SYSTEM_PROMPT)
+agent = Agent(master, system_prompt=SYSTEM_PROMPT, deps_type=data_models.MasterRequest)
 
 
-class GitHubProfileRequest(BaseModel):
-    base_url: str = Field(
-        description="GitHub profile BASE URL only, format: https://github.com/<username>. "
-        "Must NOT be a repository URL (e.g. https://github.com/user/repo).",
-        examples=["https://github.com/stevebottos", "https://github.com/anthropics"],
-    )
-
-
-class FileReadRequest(BaseModel):
-    file_path: str = Field(
-        description="Absolute or relative path to a file to read.",
-        examples=["~/.profile.md", "/home/user/documents/resume.txt"],
-    )
-
-
-class ProfileSynthesisRequest(BaseModel):
-    seed_profile: str = Field(
-        description="The user's self-description content (from their profile file).",
-    )
-    github_summary: str = Field(
-        description="The JSON summary from GitHub analysis.",
-    )
-
-
-@agent.tool_plain
+@agent.tool
 @log_tool_usage
-async def call_github_summarizer(request: GitHubProfileRequest) -> str:
-    """Analyze a user's GitHub profile: clone pinned repos, read code, generate summary."""
+async def check_profile_state(ctx: RunContext[data_models.MasterRequest]) -> str:
+    """Check the current state of the user's profile.
+
+    Returns what artifacts exist in the user's profile, including:
+    - synthesized_profile.md (enriched user profile)
+    - github_summary.json (GitHub analysis results)
+    - papers/ directory with downloaded papers
+
+    Use this to determine what work needs to be done (e.g., profile synthesis, github summary, etc.),
+    as it's quite possible that you have already produced the necessary artifacts.
+    """
+    profile_folder = constants.profiles_dir.format(user_id=ctx.deps.user_id)
+    result = util.listdir_gcs(profile_folder)
+    lines = []
+
+    if "synthesized_profile.md" in result:
+        lines.append("synthesized_profile.md: Available. You may retrieve it. DO NOT RECOMPUTE IT!")
+    else:
+        lines.append("synthesized_profile.md NOT Available. You must create it.")
+
+    if "github_summary.json" in result:
+        lines.append("github_summary.json Available. You may retrieve it. . DO NOT RECOMPUTE IT!")
+    else:
+        lines.append("github_summary.json NOT Available. You must create it.")
+
+    return "\n".join(lines)
+
+
+@agent.tool
+@log_tool_usage
+async def get_github_summary(ctx: RunContext[data_models.MasterRequest]) -> str:
+    """Retrieves the user's github summary from their profile. If it's available, retrieve
+    the profile before producing the profile summary. If it's not available, recompute it."""
+    profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
+    content = util.read_json_from_gcs(str(profile_path / "github_summary.json"))
+    return f"The user's github summary is as follows:\n{content}"
+
+
+@agent.tool
+@log_tool_usage
+async def call_github_summarizer(
+    ctx: RunContext[data_models.MasterRequest], request: data_models.GithubSummarizerRequest
+) -> str:
+    """Analyze a user's GitHub profile: clone pinned repos, read code, generate summary.
+    Check the profile state before calling me, as the summary might already be created.
+    """
+    dep = data_models.GithubSummarizerRequest(base_url=request.base_url, **ctx.deps.model_dump())
     result = await run_agent(
         github_summarizer.agent,
         "Analyze the user's GitHub profile.",
-        deps=request.base_url,
+        deps=dep,
         model_settings=get_model_settings(),
     )
     return result.output
 
 
-@agent.tool_plain
-@log_tool_usage
-async def read_file(request: FileReadRequest) -> str:
-    """Read content from a file."""
-    try:
-        path = Path(request.file_path).expanduser().resolve()
-        if not path.exists():
-            return f"Error: File not found: {request.file_path}"
-        return path.read_text()
-    except Exception as e:
-        return f"Error reading file: {e}"
+from typing import List
 
 
-@agent.tool_plain
+def extract_chat_only(messages: List) -> str:
+    chat_lines = []
+
+    for msg in messages:
+        for part in getattr(msg, "parts", []):
+            # Only include user content or tool outputs
+            if part.__class__.__name__ in ("UserPromptPart", "ToolReturnPart"):
+                chat_lines.append(part.content)
+
+    return "\n".join(chat_lines)
+
+
+@agent.tool
 @log_tool_usage
-async def call_profile_synthesizer(request: ProfileSynthesisRequest) -> str:
+async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -> str:
     """Synthesize an enriched user profile from seed profile and GitHub analysis.
-    If the user has provided a github profile, you need to handle that first."""
-    deps = profile_synthesis.ProfileSynthesisDeps(
-        seed_profile=request.seed_profile,
-        github_summary=request.github_summary,
-    )
+    If the user has provided a github profile, you need to handle that first. Make sure you
+    check the user's profile to see if they have a github summary first."""
+
+    chat_history = extract_chat_only(ctx.messages)
+    print()
+    print(chat_history)
+    print()
     result = await run_agent(
         profile_synthesis.agent,
-        f"Create an enriched profile.\n\nSeed Profile:\n{request.seed_profile}\n\nGitHub Analysis:\n{request.github_summary}",
-        deps=deps,
+        f"Create an enriched profile using the following chat: {chat_history}.",
+        deps=None,
         model_settings=get_model_settings(),
     )
 
     # Save synthesized profile
-    profile_file = DXTR_DIR / "synthesized_profile.md"
-    profile_file.write_text(result.output)
+    with TemporaryDirectory() as tmp:
+        profile_file = Path(tmp) / "synthesized_profile.md"
+        profile_file.write_text(result.output)
+        util.upload_to_gcs(
+            profile_file,
+            str(
+                Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
+                / "synthesized_profile.md"
+            ),
+        )
     print(f"  Saved to {profile_file}")
 
     return result.output
@@ -106,63 +140,8 @@ async def call_profile_synthesizer(request: ProfileSynthesisRequest) -> str:
 async def get_today() -> str:
     """Get today's date in YYYY-MM-DD format."""
     from datetime import datetime
+
     return datetime.today().strftime("%Y-%m-%d")
-
-
-@agent.tool_plain
-@log_tool_usage
-async def check_profile_state() -> str:
-    """Check the current state of the user's DXTR profile directory.
-
-    Returns what artifacts exist in ~/.dxtr including:
-    - synthesized_profile.md (enriched user profile)
-    - github_summary.json (GitHub analysis results)
-    - papers/ directory with downloaded papers
-
-    Use this to determine what work needs to be done (e.g., profile synthesis).
-    """
-    lines = [f"DXTR directory: {DXTR_DIR}", ""]
-
-    # Check synthesized profile
-    profile_path = DXTR_DIR / "synthesized_profile.md"
-    if profile_path.exists():
-        size = profile_path.stat().st_size
-        lines.append(f"[x] synthesized_profile.md ({size} bytes)")
-    else:
-        lines.append("[ ] synthesized_profile.md (not created)")
-
-    # Check GitHub summary
-    github_path = DXTR_DIR / "github_summary.json"
-    if github_path.exists():
-        size = github_path.stat().st_size
-        lines.append(f"[x] github_summary.json ({size} bytes)")
-    else:
-        lines.append("[ ] github_summary.json (not created)")
-
-    # Check cloned repos
-    repos_dir = DXTR_DIR / "repos"
-    if repos_dir.exists():
-        repo_count = sum(1 for p in repos_dir.iterdir() if p.is_dir())
-        lines.append(f"[x] repos/ ({repo_count} repositories cloned)")
-    else:
-        lines.append("[ ] repos/ (no repositories cloned)")
-
-    # Check papers
-    papers_dir = DXTR_DIR / "papers"
-    if papers_dir.exists():
-        dates = [d.name for d in papers_dir.iterdir() if d.is_dir()]
-        if dates:
-            total_papers = sum(
-                1 for d in papers_dir.iterdir() if d.is_dir()
-                for p in d.iterdir() if p.is_dir() and (p / "metadata.json").exists()
-            )
-            lines.append(f"[x] papers/ ({len(dates)} dates, {total_papers} papers)")
-        else:
-            lines.append("[ ] papers/ (empty)")
-    else:
-        lines.append("[ ] papers/ (not created)")
-
-    return "\n".join(lines)
 
 
 # === Paper Tools ===

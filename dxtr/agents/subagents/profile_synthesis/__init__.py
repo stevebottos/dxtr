@@ -1,1 +1,1 @@
-from .agent import agent, ProfileSynthesisDeps
+from .agent import agent
