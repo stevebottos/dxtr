@@ -23,52 +23,27 @@ from dxtr.agents.master import agent as main_agent
 from dxtr import data_models
 
 # =============================================================================
-# AUTHENTICATION (OIDC)
+# AUTHENTICATION (Static API Key)
 # =============================================================================
 
 security = HTTPBearer(auto_error=False)
 
-# Configuration from environment
-OIDC_ISSUER = os.environ.get("OIDC_ISSUER")
-OIDC_AUDIENCE = os.environ.get("OIDC_AUDIENCE")
-JWKS_URL = os.environ.get("JWKS_URL") or (f"{OIDC_ISSUER}/.well-known/jwks.json" if OIDC_ISSUER else None)
-
-# PyJWKClient handles caching of the JWKS
-jwks_client = jwt.PyJWKClient(JWKS_URL) if JWKS_URL else None
-
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """Verify the OIDC token if configuration is present."""
-    # Skip verification if not configured (useful for local development)
-    if not OIDC_ISSUER or not OIDC_AUDIENCE or not jwks_client:
+    """Verify the static DXTR_API_KEY if set in environment."""
+    expected_key = os.environ.get("DXTR_API_KEY")
+    
+    # Skip verification if no key is configured (local dev mode)
+    if not expected_key:
         return None
 
-    if not credentials:
+    if not credentials or credentials.credentials != expected_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication token",
+            detail="Invalid or missing API Key",
         )
-
-    try:
-        signing_key = jwks_client.get_signing_key_from_jwt(credentials.credentials)
-        payload = jwt.decode(
-            credentials.credentials,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=OIDC_AUDIENCE,
-            issuer=OIDC_ISSUER,
-        )
-        return payload
-    except jwt.PyJWTError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}",
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal auth error",
-        )
+    
+    return {"user": "admin"}
 
 
 # =============================================================================
