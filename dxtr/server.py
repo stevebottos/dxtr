@@ -1,10 +1,14 @@
 import asyncio
 import json
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import jwt
+from fastapi import FastAPI, Depends, HTTPException, Security, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from pydantic_ai.messages import ModelMessage
 
@@ -17,6 +21,55 @@ from dxtr import (
 )
 from dxtr.agents.master import agent as main_agent
 from dxtr import data_models
+
+# =============================================================================
+# AUTHENTICATION (OIDC)
+# =============================================================================
+
+security = HTTPBearer(auto_error=False)
+
+# Configuration from environment
+OIDC_ISSUER = os.environ.get("OIDC_ISSUER")
+OIDC_AUDIENCE = os.environ.get("OIDC_AUDIENCE")
+JWKS_URL = os.environ.get("JWKS_URL") or (f"{OIDC_ISSUER}/.well-known/jwks.json" if OIDC_ISSUER else None)
+
+# PyJWKClient handles caching of the JWKS
+jwks_client = jwt.PyJWKClient(JWKS_URL) if JWKS_URL else None
+
+
+async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Verify the OIDC token if configuration is present."""
+    # Skip verification if not configured (useful for local development)
+    if not OIDC_ISSUER or not OIDC_AUDIENCE or not jwks_client:
+        return None
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+        )
+
+    try:
+        signing_key = jwks_client.get_signing_key_from_jwt(credentials.credentials)
+        payload = jwt.decode(
+            credentials.credentials,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=OIDC_AUDIENCE,
+            issuer=OIDC_ISSUER,
+        )
+        return payload
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal auth error",
+        )
+
 
 # =============================================================================
 # MEMORY (simple session-based message history)
@@ -52,6 +105,25 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(title="Multi-Agent Server", lifespan=lifespan)
 
+# CORS configuration
+origins = [
+    "https://dxtrchat.app",
+    "https://www.dxtrchat.app",
+    "http://localhost",
+    "http://localhost:3000",
+    "http://localhost:5173",  # Common Vite port
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
+
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Don't think we'll ever need this again
 # @api.post("/chat", response_model=data_models.data_models.MasterResponse)
 # async def chat(request: data_models.MasterRequest):
@@ -85,7 +157,10 @@ async def handle_query(request: data_models.MasterRequest) -> str:
 
 
 @api.post("/chat/stream")
-async def chat_stream(request: data_models.MasterRequest):
+async def chat_stream(
+    request: data_models.MasterRequest,
+    _token: dict = Depends(verify_token)
+):
     """SSE streaming endpoint - sends events as the agent works."""
 
     async def event_generator():
