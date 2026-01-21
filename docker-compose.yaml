@@ -20,7 +20,11 @@ services:
     container_name: dxtr-core
     ports:
       - "8000:8000"
+    volumes:
+      - ${HOME}/.config/gcloud:/root/.config/gcloud
     environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - GOOGLE_CLOUD_PROJECT=${GCLOUD_PROJECT_ID}
       - LITELLM_BASE_URL=http://litellm:4000
       - LITELLM_API_KEY=${LITELLM_API_KEY}
       - BLOB_STORE_URI=${BLOB_STORE_URI}

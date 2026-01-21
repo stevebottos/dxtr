@@ -16,13 +16,8 @@ down:
 build:
 	docker compose build
 
-push:
+push: build
 	docker compose push
-
-# View logs from all services
-logs:
-	docker compose --profile full logs -f
-
 
 server:
 	cd dxtr && python server.py

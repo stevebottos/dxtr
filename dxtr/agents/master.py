@@ -40,19 +40,11 @@ async def check_profile_state(ctx: RunContext[data_models.MasterRequest]) -> str
     """
     profile_folder = constants.profiles_dir.format(user_id=ctx.deps.user_id)
     result = util.listdir_gcs(profile_folder)
-    lines = []
-
-    if "synthesized_profile.md" in result:
-        lines.append("synthesized_profile.md: Available. You may retrieve it. DO NOT RECOMPUTE IT!")
-    else:
-        lines.append("synthesized_profile.md NOT Available. You must create it.")
-
-    if "github_summary.json" in result:
-        lines.append("github_summary.json Available. You may retrieve it. . DO NOT RECOMPUTE IT!")
-    else:
-        lines.append("github_summary.json NOT Available. You must create it.")
-
-    return "\n".join(lines)
+    available = "Available files in user profile:\n"
+    for f in ["synthesized_profile.md", "github_summary.json"]:
+        if f in result:
+            available = available + "\t{f}\n"
+    return available
 
 
 @agent.tool
@@ -63,6 +55,16 @@ async def get_github_summary(ctx: RunContext[data_models.MasterRequest]) -> str:
     profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
     content = util.read_json_from_gcs(str(profile_path / "github_summary.json"))
     return f"The user's github summary is as follows:\n{content}"
+
+
+@agent.tool
+@log_tool_usage
+async def get_user_profile(ctx: RunContext[data_models.MasterRequest]) -> str:
+    """Retrieves the user's github summary from their profile. If it's available, retrieve
+    the profile before producing the profile summary. If it's not available, recompute it."""
+    profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
+    content = util.read_json_from_gcs(str(profile_path / "synthesized_profile.md"))
+    return f"The user's profile is as follows:\n{content}"
 
 
 @agent.tool
@@ -102,13 +104,14 @@ def extract_chat_only(messages: List) -> str:
 @log_tool_usage
 async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -> str:
     """Synthesize an enriched user profile from seed profile and GitHub analysis.
-    If the user has provided a github profile, you need to handle that first. Make sure you
-    check the user's profile to see if they have a github summary first."""
+    If the user has provided a github profile, you need to handle that first.
+    Make sure you check the user's profile to see if they have a github summary first.
+    Make sure that the user provides you with explicit information about them as well, you cannot
+    produce a sufficient result with just a github. If you need some more information,
+    you may ask the user 3-5 questions.
+    """
 
     chat_history = extract_chat_only(ctx.messages)
-    print()
-    print(chat_history)
-    print()
     result = await run_agent(
         profile_synthesis.agent,
         f"Create an enriched profile using the following chat: {chat_history}.",

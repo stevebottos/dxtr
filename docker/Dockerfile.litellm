@@ -8,4 +8,4 @@ COPY litellm_config.yaml /app/config.yaml
 
 # Bind to 0.0.0.0 and respect $PORT
 ENTRYPOINT ["sh", "-c"]
-CMD ["litellm --config /app/config.yaml --host 0.0.0.0 --port ${LITELLM_PORT} --detailed_debug"]
+CMD ["litellm --config /app/config.yaml --host 0.0.0.0 --port ${LITELLM_PORT}"]
