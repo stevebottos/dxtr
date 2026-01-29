@@ -23,3 +23,4 @@ frontend/dist/
 # Environment (secrets)
 .env
 .env.local
+test_artifacts/

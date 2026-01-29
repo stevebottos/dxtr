@@ -7,9 +7,6 @@ import time
 from pydantic_ai_litellm import LiteLLMModel
 from dxtr import data_models
 
-# Debug mode (default True unless DXTR_PROD=true)
-DEBUG_MODE = os.environ.get("DXTR_PROD", "false").lower() != "true"
-
 # === Shared LLM Config ===
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
 LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY")
@@ -29,19 +26,51 @@ papers_ranker = LiteLLMModel(
 
 # === Session Context ===
 _session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
+_session_tags: ContextVar[list[str]] = ContextVar("session_tags", default=[])
+_session_metadata: ContextVar[dict] = ContextVar("session_metadata", default={})
 
 
 def set_session_id(session_id: str) -> None:
-    """Set the current session ID for LiteLLM tracing."""
+    """Set the current session ID for LiteLLM/Langfuse tracing."""
     _session_id.set(session_id)
 
 
+def set_session_tags(tags: list[str]) -> None:
+    """Set tags for Langfuse filtering (e.g., ['test', 'integration'])."""
+    _session_tags.set(tags)
+
+
+def set_session_metadata(metadata: dict) -> None:
+    """Set additional metadata for Langfuse (e.g., {'scenario': 'profile_creation'})."""
+    _session_metadata.set(metadata)
+
+
 def get_model_settings() -> dict:
-    """Get model_settings with current session metadata for LiteLLM."""
+    """Get model_settings with current session metadata for LiteLLM/Langfuse."""
     session_id = _session_id.get()
+    tags = _session_tags.get()
+    metadata = _session_metadata.get()
+
+    if not session_id and not tags and not metadata:
+        return {}
+
+    extra_body = {}
+    langfuse_metadata = {}
+
     if session_id:
-        return {"extra_body": {"litellm_session_id": session_id}}
-    return {}
+        extra_body["litellm_session_id"] = session_id
+        langfuse_metadata["session_id"] = session_id
+
+    if tags:
+        langfuse_metadata["tags"] = tags
+
+    if metadata:
+        langfuse_metadata.update(metadata)
+
+    if langfuse_metadata:
+        extra_body["metadata"] = langfuse_metadata
+
+    return {"extra_body": extra_body}
 
 
 # === Event Bus ===
@@ -105,23 +134,15 @@ class StreamResult:
 
 
 async def run_agent(agent, query: data_models.MasterRequest, deps, **kwargs):
-    """Run an agent, streaming to console in debug mode."""
-    if not DEBUG_MODE:
-        return await agent.run(query, deps=deps, **kwargs)
+    """Run an agent.
 
-    # Debug: stream output to console
-    print(f"\n{'='*60}")
-    print(f"[STREAM] {agent.name or 'agent'}")
-    print(f"{'='*60}", flush=True)
-
-    async with agent.run_stream(query, deps=deps, **kwargs) as stream:
-        async for text in stream.stream_text(delta=True):
-            print(text, end="", flush=True)
-            publish("text", text)
-        output = await stream.get_output()
-
-    print(f"\n{'='*60}\n")
-    return StreamResult(output, stream)
+    NOTE: Streaming is disabled because pydantic-ai's run_stream() doesn't properly
+    execute tools - it returns text before tool execution completes. This is a known
+    issue with pydantic-ai streaming when models return text before tool calls.
+    See: https://github.com/pydantic/pydantic-ai/issues (streaming + tool_calls)
+    """
+    # Always use non-streaming to ensure tools are executed properly
+    return await agent.run(query, deps=deps, **kwargs)
 
 
 def log_tool_usage(func):

@@ -15,7 +15,9 @@ from dxtr.agents.util import (
     format_available_dates,
     papers_list_to_dict,
     format_ranking_results,
+    load_user_profile,
 )
+from dxtr.db import PostgresHelper
 
 from dxtr import util, constants, data_models
 
@@ -195,94 +197,155 @@ class RankPapersRequest(BaseModel):
 
 @agent.tool_plain
 @log_tool_usage
-async def get_papers() -> str:
-    """The user may ask about papers. This feature is not implemented yet."""
-    return "We can't handle papers yet - this feature is coming soon."
+async def get_available_papers(request: GetPapersRequest) -> str:
+    """Check what dates have papers available in our database.
+
+    Returns a summary of dates and paper counts from the past N days.
+    Use this to see what papers are available before fetching or ranking.
+
+    NOTE: For aggregate queries like "how many papers total" or "what's the busiest day",
+    use get_paper_stats instead - it computes totals directly.
+    """
+    try:
+        db = PostgresHelper()
+        available = db.get_available_dates(days_back=request.days_back)
+
+        if not available:
+            return "No papers found in database. Papers may need to be fetched."
+
+        lines = ["Available papers in database:"]
+        for item in available:
+            lines.append(f"  {item['date']}: {item['count']} papers")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error querying database: {e}"
 
 
-# @agent.tool_plain
-# @log_tool_usage
-# async def get_papers(request: GetPapersRequest) -> str:
-#     """Check available papers from the past week.
-
-#     Returns a summary of dates and paper counts. Use this to see what papers
-#     are already downloaded before asking the user to select dates.
-#     """
-#     available = await get_available_dates(days_back=request.days_back)
-#     return format_available_dates(available)
+class GetPaperStatsRequest(BaseModel):
+    days_back: int = Field(
+        default=7,
+        description="Number of days to look back for statistics. Use a larger value (e.g., 30, 365) for broader queries.",
+    )
 
 
-# @agent.tool_plain
-# @log_tool_usage
-# async def fetch_papers(request: FetchPapersRequest) -> str:
-#     """Fetch paper metadata from HuggingFace for a date (does NOT download).
+@agent.tool_plain
+@log_tool_usage
+async def get_paper_stats(request: GetPaperStatsRequest) -> str:
+    """Get aggregate statistics about papers in the database.
 
-#     Use this to see what papers are available on HuggingFace for a given date.
-#     Returns paper titles and IDs. Does not save anything to disk.
-#     """
-#     papers = await fetch_papers_for_date(request.date)
+    Returns pre-computed totals and averages - use this for questions like:
+    - "How many papers total do we have?"
+    - "How many papers from last week?"
+    - "What's the average upvotes?"
+    - "Which day had the most papers?"
 
-#     if not papers:
-#         return f"No papers found on HuggingFace for {request.date}"
+    This is more efficient than get_available_papers for aggregate queries
+    because it computes totals directly rather than listing each day.
+    """
+    try:
+        db = PostgresHelper()
+        stats = db.get_paper_stats(days_back=request.days_back)
 
-#     lines = [f"Found {len(papers)} papers for {request.date}:\n"]
-#     for p in papers[:20]:  # Limit to first 20 for readability
-#         lines.append(f"  - [{p['id']}] {p['title'][:60]}...")
+        if not stats or stats.get("total_papers", 0) == 0:
+            return f"No papers found in the last {request.days_back} days."
 
-#     if len(papers) > 20:
-#         lines.append(f"\n  ... and {len(papers) - 20} more")
+        # Also get the busiest day
+        busiest = db.get_date_with_most_papers(days_back=request.days_back)
+        busiest_line = ""
+        if busiest:
+            busiest_line = f"\n  Busiest day: {busiest['date']} ({busiest['count']} papers)"
 
-#     return "\n".join(lines)
-
-
-# @agent.tool_plain
-# @log_tool_usage
-# async def download_papers(request: DownloadPapersRequest) -> str:
-#     """Download papers from HuggingFace to local disk.
-
-#     Saves paper metadata to ~/.dxtr/papers/{date}/. Only use this if
-#     get_papers shows the papers aren't already downloaded.
-
-#     PREREQUISITE: Call get_papers first to check what's already on disk.
-#     """
-#     downloaded = await do_download_papers(
-#         date=request.date,
-#         paper_ids=request.paper_ids,
-#         download_pdfs=False,
-#     )
-
-#     if not downloaded:
-#         return f"No papers downloaded for {request.date}"
-
-#     return f"Downloaded {len(downloaded)} papers for {request.date}"
+        return f"""Paper statistics (last {request.days_back} days):
+  Total papers: {stats['total_papers']}
+  Days with papers: {stats['days_with_papers']}
+  Date range: {stats['earliest_date']} to {stats['latest_date']}
+  Average upvotes: {stats['avg_upvotes']}{busiest_line}"""
+    except Exception as e:
+        return f"Error querying database: {e}"
 
 
-# @agent.tool_plain
-# @log_tool_usage
-# async def rank_papers(request: RankPapersRequest) -> str:
-#     """Rank papers for a date against the user's synthesized profile.
+class GetTopPapersRequest(BaseModel):
+    date: str = Field(
+        description="Date to get papers for (format: YYYY-MM-DD).",
+        examples=["2024-01-15"],
+    )
+    limit: int = Field(
+        default=10,
+        description="Maximum number of papers to return.",
+    )
 
-#     PREREQUISITE: Call get_papers first to verify papers are downloaded.
-#     """
-#     # Load user profile
-#     # Note: This call is known to be missing user_id in the original code.
-#     # Leaving it as is but awaiting it to match async definition.
-#     # It will likely raise TypeError at runtime if called.
-#     profile = await load_profile()
-#     if "No synthesized profile found" in profile:
-#         return profile
 
-#     # Load papers and convert to dict
-#     papers_list = await load_papers_metadata(request.date)
-#     if not papers_list:
-#         return f"No papers found for {request.date}. Use download_papers first."
+@agent.tool_plain
+@log_tool_usage
+async def get_top_papers(request: GetTopPapersRequest) -> str:
+    """Get the highest upvoted papers for a specific date.
 
-#     papers_dict = papers_list_to_dict(papers_list)
+    Returns papers sorted by upvotes (most popular first).
+    Use get_available_papers first to see what dates have papers.
+    """
+    try:
+        db = PostgresHelper()
+        papers = db.get_top_papers(request.date, request.limit)
 
-#     # Rank papers in parallel
-#     results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
+        if not papers:
+            return f"No papers found for {request.date}. Use get_available_papers to see available dates."
 
-#     # Format results
-#     rankings_text = format_ranking_results(results)
+        lines = [f"Top {len(papers)} papers for {request.date} (by upvotes):\n"]
+        for p in papers:
+            title = p["title"][:60] + "..." if len(p["title"]) > 60 else p["title"]
+            lines.append(f"  [{p['upvotes']} upvotes] {title}")
+            lines.append(f"    ID: {p['id']}")
 
-#     return f"Ranked {len(results)} papers\n\n{rankings_text}"
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error querying database: {e}"
+
+
+@agent.tool
+@log_tool_usage
+async def rank_papers_for_user(
+    ctx: RunContext[data_models.MasterRequest], request: RankPapersRequest
+) -> str:
+    """Rank papers for a SINGLE SPECIFIC DATE against the user's profile.
+
+    This triggers the ranking agent to score each paper against the user's
+    synthesized profile. Papers are scored 1-10 based on relevance.
+
+    IMPORTANT: Only call this when the user EXPLICITLY requests paper ranking.
+    Do NOT call proactively after profile creation or other operations.
+
+    CONSTRAINT: Only ranks papers for ONE date at a time (max ~60 papers).
+    For queries like "best papers ever" or "all time favorites", explain that
+    ranking must be done one day at a time and ask which date to rank.
+
+    PREREQUISITE: User must have a synthesized profile.
+    """
+    MAX_PAPERS_TO_RANK = 60
+
+    # Load user profile
+    profile = await load_user_profile(ctx.deps.user_id)
+    if "No synthesized profile found" in profile:
+        return profile
+
+    # Load papers from database
+    try:
+        db = PostgresHelper()
+        papers_dict = db.get_papers_for_ranking(request.date)
+    except Exception as e:
+        return f"Error loading papers from database: {e}"
+
+    if not papers_dict:
+        return f"No papers found for {request.date}. Use get_available_papers to see available dates."
+
+    if len(papers_dict) > MAX_PAPERS_TO_RANK:
+        return f"Too many papers ({len(papers_dict)}) to rank at once. Maximum is {MAX_PAPERS_TO_RANK}. Please narrow down to a specific date."
+
+    # Rank papers in parallel using the ranking subagent
+    print(f"Ranking {len(papers_dict)} papers for user {ctx.deps.user_id}...")
+    results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
+
+    # Format results
+    rankings_text = format_ranking_results(results)
+
+    return f"Ranked {len(results)} papers for {request.date}\n\n{rankings_text}"
