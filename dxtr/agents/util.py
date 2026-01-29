@@ -2,6 +2,9 @@
 
 from tempfile import TemporaryDirectory
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+PST = ZoneInfo("America/Los_Angeles")
 from pathlib import Path
 import json
 import time
@@ -9,6 +12,24 @@ import asyncio
 
 import requests
 from dxtr import constants, util
+
+
+async def load_user_profile(user_id: str) -> str:
+    """Load synthesized profile from GCS.
+
+    Args:
+        user_id: User ID to load profile for
+
+    Returns:
+        Profile content as string, or error message if not found
+    """
+    profile_path = Path(constants.profiles_dir.format(user_id=user_id))
+    content = await util.read_from_gcs(str(profile_path / "synthesized_profile.md"))
+
+    if not content:
+        return f"No synthesized profile found for user {user_id}. Please create a profile first."
+
+    return content
 
 # TODO: This won't scale because many people could invoke papers downloading tools
 # at the same time, which wouldn't really be a crazy issue but it should be taken care of
@@ -24,7 +45,7 @@ async def get_available_dates(days_back: int = 7) -> dict[str, int]:
     available = {}
 
     for i in range(days_back):
-        date = (datetime.today() - timedelta(days=i)).strftime("%Y-%m-%d")
+        date = (datetime.now(PST) - timedelta(days=i)).strftime("%Y-%m-%d")
         date_dir_str = constants.papers_dir.format(date=date)
 
         # Check GCS
@@ -87,7 +108,7 @@ async def fetch_papers_for_date(date: str) -> list[dict]:
                     "summary": paper_data.get("summary", ""),
                     "authors": paper_data.get("authors", []),
                     "publishedAt": paper_data.get("publishedAt", ""),
-                    "upvotes": item.get("upvotes", 0),
+                    "upvotes": paper_data.get("upvotes", 0),
                 }
             )
 

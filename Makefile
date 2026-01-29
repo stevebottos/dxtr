@@ -1,4 +1,4 @@
-.PHONY: up up-dev down server frontend mock-conversation clear-queue build logs test-integration
+.PHONY: up up-dev down server frontend mock-conversation clear-queue build logs test-integration papers-service papers-service-stop
 
 # =============================================================================
 # PRODUCTION (all services in Docker)
@@ -57,3 +57,18 @@ pull-litellm:
 # Run integration tests (requires services running)
 test-integration:
 	pytest -m integration -v
+
+# =============================================================================
+# PAPERS SERVICE
+# =============================================================================
+
+# Run papers update service (hourly cron, 3-day lookback)
+papers-service:
+	docker build -f docker/Dockerfile.papers-service -t papers-service .
+	docker run -d --name papers-service \
+		-e DATABASE_URL=$$(grep DATABASE_URL .env | cut -d= -f2- | tr -d '"') \
+		papers-service
+	@echo "Papers service running in background. Logs: docker logs -f papers-service"
+
+papers-service-stop:
+	docker stop papers-service && docker rm papers-service

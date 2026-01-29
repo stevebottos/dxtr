@@ -1,0 +1,33 @@
+# Papers Update Service
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install --no-cache-dir \
+    pandas \
+    requests \
+    psycopg2-binary \
+    python-dotenv
+
+# Copy service code
+COPY services/ ./services/
+
+# Timezone (HuggingFace uses US dates)
+ENV TZ=America/Los_Angeles
+
+# Default: run hourly with 3-day lookback
+ENV LOOKBACK_DAYS=3
+ENV UPDATE_DB=true
+ENV INTERVAL_SECONDS=3600
+
+CMD ["sh", "-c", "while true; do \
+    echo \"$(date): Running papers update...\"; \
+    if [ \"$UPDATE_DB\" = \"true\" ]; then \
+        python -m services.update_papers --lookback-days $LOOKBACK_DAYS --update-db; \
+    else \
+        python -m services.update_papers --lookback-days $LOOKBACK_DAYS; \
+    fi; \
+    echo \"$(date): Sleeping for $INTERVAL_SECONDS seconds...\"; \
+    sleep $INTERVAL_SECONDS; \
+done"]

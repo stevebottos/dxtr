@@ -10,7 +10,9 @@ services:
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
-      # - DATABASE_URL=${DATABASE_URL}  # NOTE: This is intentionally commented out, I dont' think I want to use litellm for observability
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_OTEL_HOST=${LANGFUSE_OTEL_HOST}
 
   core:
     build:
@@ -28,6 +30,6 @@ services:
       - LITELLM_BASE_URL=http://litellm:4000
       - LITELLM_API_KEY=${LITELLM_API_KEY}
       - BLOB_STORE_URI=${BLOB_STORE_URI}
-      - DXTR_PROD=false
+      - DATABASE_URL=${DATABASE_URL}
     depends_on:
       - litellm

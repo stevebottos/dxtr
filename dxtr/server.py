@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 import uvicorn
 from contextlib import asynccontextmanager
 
@@ -141,9 +142,12 @@ async def chat_stream(
     async def event_generator():
         # Create event queue for this request
         queue = create_event_queue()
+        last_send = time.time()
+        KEEPALIVE_INTERVAL = 10  # seconds
 
         # Synthetic acknowledgment so user sees immediate feedback
         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
+        last_send = time.time()
 
         # Run agent in background task
         agent_task = asyncio.create_task(handle_query(request))
@@ -152,9 +156,14 @@ async def chat_stream(
             while not agent_task.done():
                 try:
                     # Wait for events with timeout so we can check if agent is done
-                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
                     yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                    last_send = time.time()
                 except asyncio.TimeoutError:
+                    # Send keepalive if nothing sent recently
+                    if time.time() - last_send >= KEEPALIVE_INTERVAL:
+                        yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Still working...'})}\n\n"
+                        last_send = time.time()
                     continue
 
             # Drain any remaining events
