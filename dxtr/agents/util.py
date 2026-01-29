@@ -2,6 +2,9 @@
 
 from tempfile import TemporaryDirectory
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+PST = ZoneInfo("America/Los_Angeles")
 from pathlib import Path
 import json
 import time
@@ -42,7 +45,7 @@ async def get_available_dates(days_back: int = 7) -> dict[str, int]:
     available = {}
 
     for i in range(days_back):
-        date = (datetime.today() - timedelta(days=i)).strftime("%Y-%m-%d")
+        date = (datetime.now(PST) - timedelta(days=i)).strftime("%Y-%m-%d")
         date_dir_str = constants.papers_dir.format(date=date)
 
         # Check GCS
@@ -105,7 +108,7 @@ async def fetch_papers_for_date(date: str) -> list[dict]:
                     "summary": paper_data.get("summary", ""),
                     "authors": paper_data.get("authors", []),
                     "publishedAt": paper_data.get("publishedAt", ""),
-                    "upvotes": item.get("upvotes", 0),
+                    "upvotes": paper_data.get("upvotes", 0),
                 }
             )
 

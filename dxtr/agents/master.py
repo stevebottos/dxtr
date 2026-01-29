@@ -116,12 +116,13 @@ def extract_chat_only(messages: List) -> str:
 @agent.tool
 @log_tool_usage
 async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Synthesize an enriched user profile from seed profile and GitHub analysis.
-    If the user has provided a github profile, you need to handle that first.
-    Make sure you check the user's profile to see if they have a github summary first.
-    Make sure that the user provides you with explicit information about them as well, you cannot
-    produce a sufficient result with just a github. If you need some more information,
-    you may ask the user 3-5 questions.
+    """Synthesize an enriched user profile from the conversation context.
+
+    Prerequisites:
+    - User has provided background, interests, and goals in the conversation
+    - If GitHub links were provided, create_github_summary should be called first
+
+    Call this when you have enough information to create a useful profile.
     """
 
     chat_history = extract_chat_only(ctx.messages)
@@ -154,10 +155,11 @@ async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -
 @agent.tool_plain
 @log_tool_usage
 async def get_today() -> str:
-    """Get today's date in YYYY-MM-DD format."""
+    """Get today's date in YYYY-MM-DD format (PST)."""
     from datetime import datetime
+    from zoneinfo import ZoneInfo
 
-    return datetime.today().strftime("%Y-%m-%d")
+    return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
 
 
 # === Paper Tools ===
@@ -307,19 +309,19 @@ async def get_top_papers(request: GetTopPapersRequest) -> str:
 async def rank_papers_for_user(
     ctx: RunContext[data_models.MasterRequest], request: RankPapersRequest
 ) -> str:
-    """Rank papers for a SINGLE SPECIFIC DATE against the user's profile.
+    """Rank papers for a specific date against the user's profile.
 
-    This triggers the ranking agent to score each paper against the user's
-    synthesized profile. Papers are scored 1-10 based on relevance.
+    Scores each paper 1-10 based on relevance to user's interests.
 
-    IMPORTANT: Only call this when the user EXPLICITLY requests paper ranking.
-    Do NOT call proactively after profile creation or other operations.
+    When to call:
+    - User asks for personalized paper recommendations
+    - User originally asked for papers, and you just finished creating their profile
 
-    CONSTRAINT: Only ranks papers for ONE date at a time (max ~60 papers).
-    For queries like "best papers ever" or "all time favorites", explain that
-    ranking must be done one day at a time and ask which date to rank.
+    Constraints:
+    - One date at a time (max ~60 papers)
+    - User must have a synthesized profile
 
-    PREREQUISITE: User must have a synthesized profile.
+    For queries like "best papers ever", ask which date to rank.
     """
     MAX_PAPERS_TO_RANK = 60
 

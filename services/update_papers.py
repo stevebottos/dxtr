@@ -135,7 +135,7 @@ def _normalize_response(data: list[dict]) -> list[dict]:
             "summary": paper_data.get("summary", ""),
             "authors": paper_data.get("authors", []),
             "publishedAt": paper_data.get("publishedAt", ""),
-            "upvotes": item.get("upvotes", 0),
+            "upvotes": paper_data.get("upvotes", 0),
         })
 
     return papers
