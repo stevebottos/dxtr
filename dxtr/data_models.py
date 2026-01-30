@@ -3,9 +3,14 @@ This module just defines requests/responses relating to agent interfaces, not ne
 tool interfaces.
 """
 
+import re
 from typing import List
 
 from pydantic import BaseModel, Field, field_validator
+
+# Pattern for safe IDs: UUIDs, alphanumeric, underscores, hyphens
+# Prevents path traversal attacks (e.g., ../../../etc)
+SAFE_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 # These fields are set explicitly via tha chat interface
@@ -13,6 +18,20 @@ class MasterRequest(BaseModel):
     user_id: str
     session_id: str
     query: str
+
+    @field_validator("user_id", "session_id")
+    @classmethod
+    def validate_safe_id(cls, v: str) -> str:
+        """Ensure IDs are safe for use in file paths (no path traversal)."""
+        if not v:
+            raise ValueError("ID cannot be empty")
+        if len(v) > 128:
+            raise ValueError(f"ID too long (max 128 chars), got {len(v)}")
+        if not SAFE_ID_PATTERN.match(v):
+            raise ValueError(
+                f"ID must contain only alphanumeric chars, underscores, or hyphens. Got: {v[:20]}..."
+            )
+        return v
 
 
 class MasterResponse(BaseModel):
@@ -64,9 +83,14 @@ class GithubSummarizerResponse(BaseModel):
     )
 
 
-# TODO: This is broken since we're in GCS now
-class FileReadRequest(BaseModel):
-    file_path: str = Field(
-        description="Absolute or relative path to a file to read.",
-        examples=["~/.profile.md", "/home/user/documents/resume.txt"],
-    )
+class SessionState(BaseModel):
+    """User state loaded at the start of each turn.
+
+    Injected into system prompt so the agent knows what artifacts exist
+    without needing to call a tool.
+
+    TODO: Migrate from GCS to database for faster reads.
+    """
+    has_synthesized_profile: bool = False
+    has_github_summary: bool = False
+    profile_content: str | None = None  # Full profile text, injected into system prompt

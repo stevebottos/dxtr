@@ -31,6 +31,41 @@ async def load_user_profile(user_id: str) -> str:
 
     return content
 
+
+async def load_session_state(user_id: str):
+    """Load user's session state from GCS.
+
+    Checks which artifacts exist and loads profile content. Called at the start
+    of each turn to inject current state into the system prompt.
+
+    TODO: Migrate to database for faster reads.
+
+    Args:
+        user_id: User ID to load state for
+
+    Returns:
+        SessionState with current artifact status and profile content
+    """
+    from dxtr.data_models import SessionState
+
+    profile_dir = constants.profiles_dir.format(user_id=user_id)
+    files = await util.listdir_gcs(profile_dir)
+
+    has_profile = "synthesized_profile.md" in files
+    has_github = "github_summary.json" in files
+
+    # Load profile content if it exists
+    profile_content = None
+    if has_profile:
+        profile_path = Path(profile_dir) / "synthesized_profile.md"
+        profile_content = await util.read_from_gcs(str(profile_path))
+
+    return SessionState(
+        has_synthesized_profile=has_profile,
+        has_github_summary=has_github,
+        profile_content=profile_content or None,
+    )
+
 # TODO: This won't scale because many people could invoke papers downloading tools
 # at the same time, which wouldn't really be a crazy issue but it should be taken care of
 # TODO: Error handling

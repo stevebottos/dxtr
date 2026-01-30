@@ -1,4 +1,4 @@
-.PHONY: up up-dev down server frontend mock-conversation clear-queue build logs test-integration papers-service papers-service-stop
+.PHONY: up down server frontend clear-queue build logs test-integration papers-service papers-service-stop push deploy-dxtr litellm pull-litellm
 
 # =============================================================================
 # PRODUCTION (all services in Docker)
@@ -27,10 +27,6 @@ litellm:
 # Start frontend dev server (port 3000)
 frontend:
 	cd frontend && npm install && npm run dev
-
-# Run mock conversation (requires server running)
-mock-conversation:
-	python mock_conversation.py
 
 deploy-dxtr:
 	docker tag dxtr-core:latest gcr.io/$$(GCLOUD_PROJECT_ID)/dxtr-core:latest
