@@ -1,9 +1,20 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import psycopg2
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
-from dxtr import master, load_system_prompt, get_model_settings, run_agent, log_tool_usage
+from dxtr import (
+    master,
+    load_system_prompt,
+    get_model_settings,
+    get_session_state,
+    update_session_state,
+    run_agent,
+    log_tool_usage,
+    publish,
+    mark_direct_response_sent,
+)
 from dxtr.agents.subagents import github_summarizer
 from dxtr.agents.subagents import profile_synthesis
 from dxtr.agents.subagents import papers_ranking
@@ -15,36 +26,42 @@ from dxtr.agents.util import (
     format_available_dates,
     papers_list_to_dict,
     format_ranking_results,
-    load_user_profile,
 )
 from dxtr.db import PostgresHelper
 
 from dxtr import util, constants, data_models
 
-SYSTEM_PROMPT = load_system_prompt(Path(__file__).parent / "system.md")
+SYSTEM_PROMPT_BASE = load_system_prompt(Path(__file__).parent / "system.md")
 
-agent = Agent(master, system_prompt=SYSTEM_PROMPT, deps_type=data_models.MasterRequest)
+agent = Agent(master, deps_type=data_models.MasterRequest)
 
 
-@agent.tool
-@log_tool_usage
-async def check_profile_state(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Check the current state of the user's profile.
+@agent.system_prompt
+def build_system_prompt(ctx: RunContext[data_models.MasterRequest]) -> str:
+    """Build system prompt with current user state and profile injected."""
+    state = get_session_state()
 
-    Returns what artifacts exist in the user's profile, including:
-    - synthesized_profile.md (enriched user profile)
-    - github_summary.json (GitHub analysis results)
-    - papers/ directory with downloaded papers
+    # Profile section - full content or "not created"
+    if state.profile_content:
+        profile_section = f"""
+# User Profile
+The user's profile is loaded below. Use this to answer questions about them or for personalization.
+Do NOT call get_user_profile - the profile is already here.
 
-    Use this to determine what work needs to be done (e.g., profile synthesis, github summary, etc.),
-    as it's quite possible that you have already produced the necessary artifacts.
-    """
-    profile_folder = constants.profiles_dir.format(user_id=ctx.deps.user_id)
-    result = await util.listdir_gcs(profile_folder)
+{state.profile_content}
+"""
+    else:
+        profile_section = """
+# User Profile
+Not yet created. If the user wants personalized recommendations, help them create a profile first.
+"""
 
-    if not len(result):
-        return "There are no database files for this user. Create their profile from scratch."
-    return f"Current database files for this user: {result}"
+    state_section = f"""
+# Current User State
+- Profile exists: {state.has_synthesized_profile}
+- GitHub summary exists: {state.has_github_summary}
+"""
+    return SYSTEM_PROMPT_BASE + state_section + profile_section
 
 
 @agent.tool
@@ -60,21 +77,6 @@ async def get_github_summary(ctx: RunContext[data_models.MasterRequest]) -> str:
         return "No github summary exists for the user in our database."
 
     return f"The user's github summary is as follows:\n{content}"
-
-
-@agent.tool
-@log_tool_usage
-async def get_user_profile(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Retrieves the user's synthesized profile from our database. If it is not listed as available by
-    check_profile_state, then we need to create it."""
-    profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
-    content = await util.read_from_gcs(str(profile_path / "synthesized_profile.md"))
-
-    if not len(content):
-        print("NO USER DATA")
-        return "No github summary exists for the user in our database."
-
-    return f"The user's profile is as follows:\n{content}"
 
 
 @agent.tool
@@ -95,6 +97,10 @@ async def create_github_summary(
         deps=dep,
         model_settings=get_model_settings(),
     )
+
+    # Update session state so subsequent tools know github summary exists
+    update_session_state(has_github_summary=True)
+
     return result.output
 
 
@@ -145,6 +151,9 @@ async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -
             ),
         )
     print(f"  Saved to {profile_file}")
+
+    # Update session state so subsequent tools know profile exists and have content
+    update_session_state(has_synthesized_profile=True, profile_content=result.output)
 
     return result.output
 
@@ -220,8 +229,8 @@ async def get_available_papers(request: GetPapersRequest) -> str:
             lines.append(f"  {item['date']}: {item['count']} papers")
 
         return "\n".join(lines)
-    except Exception as e:
-        return f"Error querying database: {e}"
+    except psycopg2.Error as e:
+        return f"Database error: {e}"
 
 
 class GetPaperStatsRequest(BaseModel):
@@ -263,8 +272,8 @@ async def get_paper_stats(request: GetPaperStatsRequest) -> str:
   Days with papers: {stats['days_with_papers']}
   Date range: {stats['earliest_date']} to {stats['latest_date']}
   Average upvotes: {stats['avg_upvotes']}{busiest_line}"""
-    except Exception as e:
-        return f"Error querying database: {e}"
+    except psycopg2.Error as e:
+        return f"Database error: {e}"
 
 
 class GetTopPapersRequest(BaseModel):
@@ -300,8 +309,8 @@ async def get_top_papers(request: GetTopPapersRequest) -> str:
             lines.append(f"    ID: {p['id']}")
 
         return "\n".join(lines)
-    except Exception as e:
-        return f"Error querying database: {e}"
+    except psycopg2.Error as e:
+        return f"Database error: {e}"
 
 
 @agent.tool
@@ -325,17 +334,18 @@ async def rank_papers_for_user(
     """
     MAX_PAPERS_TO_RANK = 60
 
-    # Load user profile
-    profile = await load_user_profile(ctx.deps.user_id)
-    if "No synthesized profile found" in profile:
-        return profile
+    # Get profile from session state (already loaded at turn start)
+    state = get_session_state()
+    if not state.profile_content:
+        return f"No synthesized profile found for user {ctx.deps.user_id}. Please create a profile first."
+    profile = state.profile_content
 
     # Load papers from database
     try:
         db = PostgresHelper()
         papers_dict = db.get_papers_for_ranking(request.date)
-    except Exception as e:
-        return f"Error loading papers from database: {e}"
+    except psycopg2.Error as e:
+        return f"Database error loading papers: {e}"
 
     if not papers_dict:
         return f"No papers found for {request.date}. Use get_available_papers to see available dates."
@@ -350,4 +360,11 @@ async def rank_papers_for_user(
     # Format results
     rankings_text = format_ranking_results(results)
 
-    return f"Ranked {len(results)} papers for {request.date}\n\n{rankings_text}"
+    # === Scenario 3: Direct passthrough ===
+    # Rankings ARE the response - publish directly to user and tell server
+    # to suppress master's output (see subagent_response_problem.md)
+    publish("content", rankings_text)
+    mark_direct_response_sent()
+
+    # Return confirmation to master (won't be shown to user)
+    return f"Ranked {len(results)} papers for {request.date}. [Rankings already displayed to user]"

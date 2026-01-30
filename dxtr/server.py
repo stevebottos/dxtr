@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 import json
 import os
 import time
@@ -15,13 +16,17 @@ from pydantic_ai.messages import ModelMessage
 
 from dxtr import (
     set_session_id,
+    set_session_state,
     get_model_settings,
     run_agent,
     create_event_queue,
     clear_event_queue,
+    was_direct_response_sent,
 )
 from dxtr.agents.master import agent as main_agent
+from dxtr.agents.util import load_session_state
 from dxtr import data_models
+from dxtr.db import close_pool
 
 # =============================================================================
 # AUTHENTICATION (Static API Key)
@@ -56,6 +61,7 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Security(secu
 
 # For now: simple in-memory session store (swap for Redis in production)
 _sessions: dict[str, list[ModelMessage]] = {}
+_session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 # =============================================================================
@@ -77,6 +83,7 @@ async def lifespan(app: FastAPI):
     print("Multi-agent system ready")
     yield
     print("Shutting down")
+    close_pool()  # Clean up database connections
 
 
 api = FastAPI(title="Multi-Agent Server", lifespan=lifespan)
@@ -100,34 +107,39 @@ api.add_middleware(
     allow_headers=["*"],
 )
 
-# Don't think we'll ever need this again
-# @api.post("/chat", response_model=data_models.data_models.MasterResponse)
-# async def chat(request: data_models.MasterRequest):
-#     answer = await handle_query(request.query, request.user_id, request.session_id)
-#     return data_models.MasterResponse(answer=answer)
-
-
 async def handle_query(request: data_models.MasterRequest) -> str:
-    """Process a query through the main agent with conversation history."""
+    """Process a query through the main agent with conversation history.
+
+    Session state loading and history updates are inside the lock to prevent
+    race conditions when concurrent requests arrive for the same session.
+    """
     session_key = get_session_key(request.user_id, request.session_id)
 
     # Set session context for LiteLLM tracing
     set_session_id(request.session_id)
 
-    # Get existing conversation history for this session
-    history = _sessions.get(session_key, [])
+    # Lock per session to prevent concurrent requests from corrupting history
+    # IMPORTANT: State loading must be inside the lock to avoid race conditions
+    # where two requests load stale state and overwrite each other's changes
+    async with _session_locks[session_key]:
+        # Load user state from GCS (inside lock to prevent race)
+        state = await load_session_state(request.user_id)
+        set_session_state(state)
 
-    # Run agent with message history (streams to console in debug mode)
-    result = await run_agent(
-        main_agent,
-        request.query,
-        deps=request,
-        message_history=history,
-        model_settings=get_model_settings(),
-    )
+        # Get existing conversation history for this session
+        history = _sessions.get(session_key, [])
 
-    # Store updated history
-    _sessions[session_key] = result.all_messages()
+        # Run agent with message history (streams to console in debug mode)
+        result = await run_agent(
+            main_agent,
+            request.query,
+            deps=request,
+            message_history=history,
+            model_settings=get_model_settings(),
+        )
+
+        # Store updated history
+        _sessions[session_key] = result.all_messages()
 
     return result.output
 
@@ -171,13 +183,32 @@ async def chat_stream(
                 event = await queue.get()
                 yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
 
-            # Get final result and send as done event
+            # Get final result
             answer = await agent_task
-            yield f"event: done\ndata: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
 
+            # === Handle the three response scenarios (see subagent_response_problem.md) ===
+            # Scenario 1 & 2: Master's response is the answer
+            # Scenario 3: Direct response was already sent via "content" event, suppress master's echo
+            if was_direct_response_sent():
+                # Content already streamed to user, send empty done to signal completion
+                yield f"event: done\ndata: {json.dumps({'type': 'done', 'answer': ''})}\n\n"
+            else:
+                yield f"event: done\ndata: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+
+        except asyncio.CancelledError:
+            # Client disconnected - cancel the agent task to free resources
+            agent_task.cancel()
+            raise
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
+            # Cancel agent task if still running (client disconnect or error)
+            if not agent_task.done():
+                agent_task.cancel()
+                try:
+                    await agent_task
+                except asyncio.CancelledError:
+                    pass
             clear_event_queue()
 
     return StreamingResponse(

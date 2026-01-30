@@ -7,27 +7,66 @@ import time
 from pydantic_ai_litellm import LiteLLMModel
 from dxtr import data_models
 
-# === Shared LLM Config ===
-LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
-LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY")
+# === Shared LLM Config (lazy initialization) ===
+# Models are created on first access to avoid failing at import time.
+# This allows tests and local dev to import the module without LiteLLM configured.
 
-# Models via LiteLLM proxy
-master = LiteLLMModel("openai/master", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
-github_summarizer = LiteLLMModel(
-    "openai/github_summarizer", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY
-)
-profile_synthesizer = LiteLLMModel(
-    "openai/profile_synthesizer", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY
-)
-papers_ranker = LiteLLMModel(
-    "openai/papers_ranker", api_base=LITELLM_BASE_URL, api_key=LITELLM_API_KEY
-)
+_models: dict[str, LiteLLMModel] = {}
+
+
+def _get_litellm_config() -> tuple[str, str]:
+    """Get LiteLLM config, raising helpful error if not configured."""
+    base_url = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
+    api_key = os.environ.get("LITELLM_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "LITELLM_API_KEY not set. See .env.example for required configuration."
+        )
+    return base_url, api_key
+
+
+def _get_model(name: str) -> LiteLLMModel:
+    """Get or create a LiteLLM model (lazy initialization)."""
+    if name not in _models:
+        base_url, api_key = _get_litellm_config()
+        _models[name] = LiteLLMModel(f"openai/{name}", api_base=base_url, api_key=api_key)
+    return _models[name]
+
+
+# Lazy model accessors - these are module-level properties that create models on first use
+class _LazyModel:
+    """Descriptor that creates LiteLLM model on first access."""
+    def __init__(self, name: str):
+        self.name = name
+
+    def __get__(self, obj, objtype=None) -> LiteLLMModel:
+        return _get_model(self.name)
+
+
+class _Models:
+    """Container for lazy-loaded models. Access via module-level vars."""
+    master = _LazyModel("master")
+    github_summarizer = _LazyModel("github_summarizer")
+    profile_synthesizer = _LazyModel("profile_synthesizer")
+    papers_ranker = _LazyModel("papers_ranker")
+
+
+_lazy_models = _Models()
+
+# Module-level accessors for backwards compatibility
+# These are accessed like `from dxtr import master` and lazily create models
+def __getattr__(name: str):
+    """Module-level __getattr__ for lazy model access."""
+    if name in ("master", "github_summarizer", "profile_synthesizer", "papers_ranker"):
+        return _get_model(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # === Session Context ===
 _session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
 _session_tags: ContextVar[list[str]] = ContextVar("session_tags", default=[])
 _session_metadata: ContextVar[dict] = ContextVar("session_metadata", default={})
+_session_state: ContextVar[data_models.SessionState | None] = ContextVar("session_state", default=None)
 
 
 def set_session_id(session_id: str) -> None:
@@ -43,6 +82,29 @@ def set_session_tags(tags: list[str]) -> None:
 def set_session_metadata(metadata: dict) -> None:
     """Set additional metadata for Langfuse (e.g., {'scenario': 'profile_creation'})."""
     _session_metadata.set(metadata)
+
+
+def set_session_state(state: data_models.SessionState) -> None:
+    """Set the current user's session state (loaded from GCS at turn start)."""
+    _session_state.set(state)
+
+
+def get_session_state() -> data_models.SessionState:
+    """Get the current session state. Returns empty state if not set."""
+    state = _session_state.get()
+    if state is None:
+        return data_models.SessionState()
+    return state
+
+
+def update_session_state(**kwargs) -> None:
+    """Update specific fields in the current session state.
+
+    Called by tools after creating artifacts to keep state fresh within a turn.
+    """
+    current = get_session_state()
+    updated = current.model_copy(update=kwargs)
+    _session_state.set(updated)
 
 
 def get_model_settings() -> dict:
@@ -77,6 +139,15 @@ def get_model_settings() -> dict:
 # Per-request queue for streaming events to clients
 _event_queue: ContextVar[asyncio.Queue | None] = ContextVar("event_queue", default=None)
 
+# === Direct Response Tracking ===
+# When a tool publishes a "content" event, the content IS the response and master
+# shouldn't echo it. This flag lets the server know to suppress master's output.
+# See subagent_response_problem.md for the three response scenarios:
+#   1. Internal continuation: tool result → master chains to another tool (github_summary → profile_synthesis)
+#   2. Master responds: tool result → master adds context for user (profile_synthesis → "Profile ready!")
+#   3. Direct passthrough: tool streams content directly → suppress master echo (papers_ranking)
+_direct_response_sent: ContextVar[bool] = ContextVar("direct_response_sent", default=False)
+
 
 def create_event_queue(maxsize: int = 100) -> asyncio.Queue:
     """Create and set a new event queue for the current request context."""
@@ -91,8 +162,23 @@ def get_event_queue() -> asyncio.Queue | None:
 
 
 def clear_event_queue() -> None:
-    """Clear the event queue from the current context."""
+    """Clear the event queue and direct response flag from the current context."""
     _event_queue.set(None)
+    _direct_response_sent.set(False)
+
+
+def mark_direct_response_sent() -> None:
+    """Mark that a direct response was sent to the user (Scenario 3).
+
+    Call this when a tool publishes content that IS the final response,
+    so the server knows to suppress master's echoed output.
+    """
+    _direct_response_sent.set(True)
+
+
+def was_direct_response_sent() -> bool:
+    """Check if a direct response was sent during this request."""
+    return _direct_response_sent.get()
 
 
 def publish(event_type: str, message: str) -> None:
@@ -133,15 +219,19 @@ class StreamResult:
         return self._stream.all_messages()
 
 
-async def run_agent(agent, query: data_models.MasterRequest, deps, **kwargs):
-    """Run an agent.
+async def run_agent(agent, query: str, deps, **kwargs):
+    """Run an agent with a prompt.
+
+    Args:
+        agent: The pydantic-ai Agent to run
+        query: The prompt/query string
+        deps: Dependencies for the agent (must match agent's deps_type, or None if no deps_type)
+        **kwargs: Additional args passed to agent.run() (e.g., model_settings)
 
     NOTE: Streaming is disabled because pydantic-ai's run_stream() doesn't properly
     execute tools - it returns text before tool execution completes. This is a known
     issue with pydantic-ai streaming when models return text before tool calls.
-    See: https://github.com/pydantic/pydantic-ai/issues (streaming + tool_calls)
     """
-    # Always use non-streaming to ensure tools are executed properly
     return await agent.run(query, deps=deps, **kwargs)
 
 
