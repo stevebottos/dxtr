@@ -313,7 +313,10 @@ def format_ranking_results(results: list[dict]) -> str:
 
         lines.append(f"**[{score}/10]** {r['title']}")
         lines.append(f"  - {r['reason']}")
-        lines.append(f"  - `{r['id']}`")
+        paper_id = r['id']
+        hf_link = f"https://huggingface.co/papers/{paper_id}"
+        arxiv_link = f"https://arxiv.org/abs/{paper_id}"
+        lines.append(f"  - [HuggingFace]({hf_link}) | [arXiv]({arxiv_link})")
         lines.append("")
 
     return "\n".join(lines)

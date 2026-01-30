@@ -3,7 +3,7 @@
 import asyncio
 from typing import TypeVar, Callable, Awaitable
 
-from dxtr import publish
+from dxtr.bus import send_internal
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -86,9 +86,9 @@ async def parallel_map(
                 done = completed_count
             if remaining == 0:
                 break
-            publish("progress", f"{desc}: {done}/{total} done, {remaining} pending")
+            send_internal("progress", f"{desc}: {done}/{total} done, {remaining} pending")
 
-    publish("status", f"{desc}: {total} items...")
+    send_internal("status", f"{desc}: {total} items...")
 
     tasks = [process_one(idx, item) for idx, item in enumerate(items)]
 
@@ -124,7 +124,7 @@ class ProgressReporter:
 
     def update(self, message: str) -> None:
         """Send a general status update."""
-        publish("status", message)
+        send_internal("status", message)
 
     def progress(self, completed: int, total: int, detail: str = "") -> None:
         """Send a progress update with completion count."""
@@ -132,12 +132,12 @@ class ProgressReporter:
         msg = f"[{completed}/{total}] ({pct:.0f}%)"
         if detail:
             msg += f" {detail}"
-        publish("progress", msg)
+        send_internal("progress", msg)
 
     def complete(self, message: str = "Done") -> None:
         """Send a completion message."""
-        publish("status", f"✓ {message}")
+        send_internal("status", f"✓ {message}")
 
     def error(self, message: str) -> None:
         """Send an error message."""
-        publish("error", message)
+        send_internal("error", message)

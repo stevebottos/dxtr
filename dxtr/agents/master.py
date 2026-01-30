@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import psycopg2
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_ai import Agent, RunContext
 
 from dxtr import (
@@ -12,9 +12,8 @@ from dxtr import (
     update_session_state,
     run_agent,
     log_tool_usage,
-    publish,
-    mark_direct_response_sent,
 )
+from dxtr.bus import send_to_user, send_internal
 from dxtr.agents.subagents import github_summarizer
 from dxtr.agents.subagents import profile_synthesis
 from dxtr.agents.subagents import papers_ranking
@@ -201,9 +200,23 @@ class DownloadPapersRequest(BaseModel):
 
 class RankPapersRequest(BaseModel):
     date: str = Field(
-        description="Date to rank papers for (format: YYYY-MM-DD).",
+        description="Single date to rank papers for (format: YYYY-MM-DD). Only one day at a time.",
         examples=["2024-01-15"],
     )
+
+    @field_validator("date")
+    @classmethod
+    def validate_single_date(cls, v: str) -> str:
+        """Reject time span patterns - only single dates allowed."""
+        span_indicators = [" to ", " - ", "through", "between", ".."]
+        v_lower = v.lower()
+        for indicator in span_indicators:
+            if indicator in v_lower:
+                raise ValueError(
+                    f"Time spans are not supported. Please request a single day's papers "
+                    f"(e.g., '2024-01-15'). For multiple days, make separate requests."
+                )
+        return v
 
 
 @agent.tool_plain
@@ -315,22 +328,24 @@ async def get_top_papers(request: GetTopPapersRequest) -> str:
 
 @agent.tool
 @log_tool_usage
-async def rank_papers_for_user(
+async def rank_daily_papers(
     ctx: RunContext[data_models.MasterRequest], request: RankPapersRequest
 ) -> str:
-    """Rank papers for a specific date against the user's profile.
+    """Rank papers for a SINGLE DATE against the user's profile.
 
     Scores each paper 1-10 based on relevance to user's interests.
 
     When to call:
-    - User asks for personalized paper recommendations
+    - User asks for personalized paper recommendations for a specific day
     - User originally asked for papers, and you just finished creating their profile
 
     Constraints:
-    - One date at a time (max ~60 papers)
+    - SINGLE DAY ONLY - time spans are not supported
+    - Max ~60 papers per day
     - User must have a synthesized profile
 
-    For queries like "best papers ever", ask which date to rank.
+    For date ranges, guide user to request one day at a time.
+    For queries like "best papers ever", ask which specific date to rank.
     """
     MAX_PAPERS_TO_RANK = 60
 
@@ -360,11 +375,12 @@ async def rank_papers_for_user(
     # Format results
     rankings_text = format_ranking_results(results)
 
-    # === Scenario 3: Direct passthrough ===
-    # Rankings ARE the response - publish directly to user and tell server
-    # to suppress master's output (see subagent_response_problem.md)
-    publish("content", rankings_text)
-    mark_direct_response_sent()
+    # Send rankings directly to user (bypasses LLM, preserves formatting)
+    send_to_user(rankings_text)
 
-    # Return confirmation to master (won't be shown to user)
-    return f"Ranked {len(results)} papers for {request.date}. [Rankings already displayed to user]"
+    # Tell master to generate a followup
+    return (
+        f"Ranked {len(results)} papers for {request.date}. "
+        f"Rankings have been sent to the user. "
+        f"Generate a brief followup message (1-2 sentences)."
+    )

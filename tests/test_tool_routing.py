@@ -119,7 +119,7 @@ async def test_no_tools_for_chitchat(case: ToolRoutingCase, make_request, setup_
     assert_forbidden_tools_not_called(test_case, case.forbidden_tools)
 
     # Also verify no tools at all (or only cheap ones like get_today)
-    expensive_tools = {"rank_papers_for_user", "call_profile_synthesizer", "create_github_summary"}
+    expensive_tools = {"rank_daily_papers", "call_profile_synthesizer", "create_github_summary"}
     called_names = {tc.name for tc in test_case.tools_called}
     expensive_called = called_names & expensive_tools
     assert not expensive_called, f"Expensive tools called for chitchat: {expensive_called}"
@@ -173,7 +173,7 @@ async def test_profile_creation(make_request, setup_session, profile_content):
 @pytest.mark.order(2)  # Run after profile creation
 @pytest.mark.parametrize("case", RANKING_CASES, ids=lambda c: c.name)
 async def test_ranking_with_profile(case: ToolRoutingCase, make_request, setup_session):
-    """Ranking queries with existing profile should use rank_papers_for_user."""
+    """Ranking queries with existing profile should use rank_daily_papers."""
     # Inject state indicating profile exists (simulates real user with profile)
     injected_state = SessionState(
         has_synthesized_profile=True,
@@ -253,6 +253,63 @@ class TestRankingOutputFormat:
         # Should contain links
         assert "huggingface.co" in output
         assert "arxiv.org" in output
+
+
+# =============================================================================
+# Date Range Rejection Tests (Unit Tests)
+# =============================================================================
+
+from dxtr.agents.master import RankPapersRequest
+
+
+class TestDateRangeRejection:
+    """Unit tests for date range rejection in RankPapersRequest.
+
+    These tests verify that time spans are rejected with a helpful message.
+    """
+
+    def test_time_span_to_rejected(self):
+        """Time span with 'to' should be rejected with helpful message."""
+        with pytest.raises(ValueError) as exc_info:
+            RankPapersRequest(date="2024-01-15 to 2024-01-20")
+
+        error_msg = str(exc_info.value)
+        assert "single day" in error_msg.lower()
+        assert "not supported" in error_msg.lower()
+
+    def test_time_span_dash_rejected(self):
+        """Time span with ' - ' should be rejected."""
+        with pytest.raises(ValueError) as exc_info:
+            RankPapersRequest(date="2024-01-15 - 2024-01-20")
+
+        error_msg = str(exc_info.value)
+        assert "time span" in error_msg.lower()
+
+    def test_time_span_through_rejected(self):
+        """Time span with 'through' should be rejected."""
+        with pytest.raises(ValueError) as exc_info:
+            RankPapersRequest(date="January 15 through January 20")
+
+        error_msg = str(exc_info.value)
+        assert "not supported" in error_msg.lower()
+
+    def test_time_span_between_rejected(self):
+        """Time span with 'between' should be rejected."""
+        with pytest.raises(ValueError) as exc_info:
+            RankPapersRequest(date="between 2024-01-15 and 2024-01-20")
+
+        error_msg = str(exc_info.value)
+        assert "single day" in error_msg.lower()
+
+    def test_single_date_accepted(self):
+        """Single date should be accepted without error."""
+        request = RankPapersRequest(date="2024-01-15")
+        assert request.date == "2024-01-15"
+
+    def test_single_date_with_text_accepted(self):
+        """Single date with descriptive text should be accepted."""
+        request = RankPapersRequest(date="yesterday")
+        assert request.date == "yesterday"
 
 
 # =============================================================================
