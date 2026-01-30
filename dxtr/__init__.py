@@ -36,6 +36,7 @@ def _get_model(name: str) -> LiteLLMModel:
 # Lazy model accessors - these are module-level properties that create models on first use
 class _LazyModel:
     """Descriptor that creates LiteLLM model on first access."""
+
     def __init__(self, name: str):
         self.name = name
 
@@ -45,6 +46,7 @@ class _LazyModel:
 
 class _Models:
     """Container for lazy-loaded models. Access via module-level vars."""
+
     master = _LazyModel("master")
     github_summarizer = _LazyModel("github_summarizer")
     profile_synthesizer = _LazyModel("profile_synthesizer")
@@ -52,6 +54,7 @@ class _Models:
 
 
 _lazy_models = _Models()
+
 
 # Module-level accessors for backwards compatibility
 # These are accessed like `from dxtr import master` and lazily create models
@@ -66,7 +69,9 @@ def __getattr__(name: str):
 _session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
 _session_tags: ContextVar[list[str]] = ContextVar("session_tags", default=[])
 _session_metadata: ContextVar[dict] = ContextVar("session_metadata", default={})
-_session_state: ContextVar[data_models.SessionState | None] = ContextVar("session_state", default=None)
+_session_state: ContextVar[data_models.SessionState | None] = ContextVar(
+    "session_state", default=None
+)
 
 
 def set_session_id(session_id: str) -> None:
@@ -135,74 +140,6 @@ def get_model_settings() -> dict:
     return {"extra_body": extra_body}
 
 
-# === Event Bus ===
-# Per-request queue for streaming events to clients
-_event_queue: ContextVar[asyncio.Queue | None] = ContextVar("event_queue", default=None)
-
-# === Direct Response Tracking ===
-# When a tool publishes a "content" event, the content IS the response and master
-# shouldn't echo it. This flag lets the server know to suppress master's output.
-# See subagent_response_problem.md for the three response scenarios:
-#   1. Internal continuation: tool result → master chains to another tool (github_summary → profile_synthesis)
-#   2. Master responds: tool result → master adds context for user (profile_synthesis → "Profile ready!")
-#   3. Direct passthrough: tool streams content directly → suppress master echo (papers_ranking)
-_direct_response_sent: ContextVar[bool] = ContextVar("direct_response_sent", default=False)
-
-
-def create_event_queue(maxsize: int = 100) -> asyncio.Queue:
-    """Create and set a new event queue for the current request context."""
-    queue = asyncio.Queue(maxsize=maxsize)
-    _event_queue.set(queue)
-    return queue
-
-
-def get_event_queue() -> asyncio.Queue | None:
-    """Get the event queue for the current context (if any)."""
-    return _event_queue.get()
-
-
-def clear_event_queue() -> None:
-    """Clear the event queue and direct response flag from the current context."""
-    _event_queue.set(None)
-    _direct_response_sent.set(False)
-
-
-def mark_direct_response_sent() -> None:
-    """Mark that a direct response was sent to the user (Scenario 3).
-
-    Call this when a tool publishes content that IS the final response,
-    so the server knows to suppress master's echoed output.
-    """
-    _direct_response_sent.set(True)
-
-
-def was_direct_response_sent() -> bool:
-    """Check if a direct response was sent during this request."""
-    return _direct_response_sent.get()
-
-
-def publish(event_type: str, message: str) -> None:
-    """Publish an event to the bus.
-
-    Args:
-        event_type: Event type (e.g., "tool", "progress", "status", "error")
-        message: Human-readable message
-
-    Events are added to the current request's queue (if one exists) and
-    always printed to stdout for server logs.
-    """
-    # Always log to stdout
-    print(f"[{event_type.upper()}] {message}", flush=True)
-
-    # Push to queue if one exists for this request
-    queue = _event_queue.get()
-    if queue is not None:
-        try:
-            queue.put_nowait({"type": event_type, "message": message})
-        except asyncio.QueueFull:
-            print(f"[WARN] Event queue full, dropping: {event_type}", flush=True)
-
-
 def load_system_prompt(file_path: Path) -> str:
     """Load a system prompt from a markdown file."""
     return file_path.read_text().strip()
@@ -238,8 +175,7 @@ async def run_agent(agent, query: str, deps, **kwargs):
 def log_tool_usage(func):
     """Decorator that logs when a tool function is called.
 
-    Works with both sync and async functions. Publishes to the event bus
-    when the tool is invoked to improve visibility.
+    Works with both sync and async functions. Sends status to internal bus.
 
     Usage:
         @agent.tool_plain
@@ -247,18 +183,19 @@ def log_tool_usage(func):
         async def my_tool(request: MyRequest) -> str:
             ...
     """
+    from dxtr.bus import send_internal
 
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
-        publish("tool", f"{func.__name__} started.")
+        send_internal("tool", f"{func.__name__} started.")
         _t = time.time()
         ret = await func(*args, **kwargs)
-        publish("tool", f"{func.__name__} finished, {time.time() - _t} elapsed.")
+        send_internal("tool", f"{func.__name__} finished, {time.time() - _t:.1f}s elapsed.")
         return ret
 
     @wraps(func)
     def sync_wrapper(*args, **kwargs):
-        publish("tool", f"{func.__name__} called")
+        send_internal("tool", f"{func.__name__} called")
         return func(*args, **kwargs)
 
     if asyncio.iscoroutinefunction(func):
