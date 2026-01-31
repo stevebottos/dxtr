@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 from deepeval.test_case import LLMTestCase, ToolCall
 
 from dxtr import set_session_id, set_session_tags, set_session_metadata, set_session_state, get_model_settings
-from dxtr.agents.util import load_session_state
+from dxtr.util import load_session_state
 from dxtr.agents.master import agent
 from dxtr.data_models import MasterRequest, SessionState
 
@@ -136,7 +136,7 @@ def extract_tool_calls(messages) -> list[ToolCall]:
     tool_calls = []
     for msg in messages:
         for part in getattr(msg, "parts", []):
-            if hasattr(part, "tool_name"):
+            if hasattr(part, "tool_name") and part.tool_name is not None:
                 tool_calls.append(ToolCall(name=part.tool_name))
     return tool_calls
 

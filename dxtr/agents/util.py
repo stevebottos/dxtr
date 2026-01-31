@@ -2,77 +2,12 @@
 
 from tempfile import TemporaryDirectory
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
-PST = ZoneInfo("America/Los_Angeles")
 from pathlib import Path
 import json
-import time
 import asyncio
 
 import requests
 from dxtr import constants, util
-
-
-async def load_user_profile(user_id: str) -> str:
-    """Load synthesized profile from GCS.
-
-    Args:
-        user_id: User ID to load profile for
-
-    Returns:
-        Profile content as string, or error message if not found
-    """
-    profile_path = Path(constants.profiles_dir.format(user_id=user_id))
-    content = await util.read_from_gcs(str(profile_path / "synthesized_profile.md"))
-
-    if not content:
-        return f"No synthesized profile found for user {user_id}. Please create a profile first."
-
-    return content
-
-
-async def load_session_state(user_id: str):
-    """Load user's session state from GCS.
-
-    Checks which artifacts exist and loads profile content. Called at the start
-    of each turn to inject current state into the system prompt.
-
-    TODO: Migrate to database for faster reads.
-
-    Args:
-        user_id: User ID to load state for
-
-    Returns:
-        SessionState with current artifact status and profile content
-    """
-    from dxtr.data_models import SessionState
-
-    profile_dir = constants.profiles_dir.format(user_id=user_id)
-    files = await util.listdir_gcs(profile_dir)
-
-    has_profile = "synthesized_profile.md" in files
-    has_github = "github_summary.json" in files
-
-    # Load profile content if it exists
-    profile_content = None
-    if has_profile:
-        profile_path = Path(profile_dir) / "synthesized_profile.md"
-        profile_content = await util.read_from_gcs(str(profile_path))
-
-    return SessionState(
-        has_synthesized_profile=has_profile,
-        has_github_summary=has_github,
-        profile_content=profile_content or None,
-    )
-
-# TODO: This won't scale because many people could invoke papers downloading tools
-# at the same time, which wouldn't really be a crazy issue but it should be taken care of
-# TODO: Error handling
-# TODO: multithread
-
-ARXIV_PDF_URL = "https://arxiv.org/pdf/{id}"
-HF_DAILY_PAPERS_URL = "https://huggingface.co/api/daily_papers"
 
 
 async def get_available_dates(days_back: int = 7) -> dict[str, int]:
@@ -80,7 +15,7 @@ async def get_available_dates(days_back: int = 7) -> dict[str, int]:
     available = {}
 
     for i in range(days_back):
-        date = (datetime.now(PST) - timedelta(days=i)).strftime("%Y-%m-%d")
+        date = (datetime.now(constants.PST) - timedelta(days=i)).strftime("%Y-%m-%d")
         date_dir_str = constants.papers_dir.format(date=date)
 
         # Check GCS
@@ -115,7 +50,9 @@ async def fetch_papers_for_date(date: str) -> list[dict]:
 
     def _fetch():
         try:
-            response = requests.get(f"{HF_DAILY_PAPERS_URL}?date={date}", timeout=30)
+            response = requests.get(
+                f"{constants.HF_DAILY_PAPERS_URL}?date={date}", timeout=30
+            )
             response.raise_for_status()
             data = response.json()
             return data
@@ -200,7 +137,9 @@ async def download_papers(
                     try:
 
                         def _download_pdf():
-                            r = requests.get(ARXIV_PDF_URL.format(id=paper_id), timeout=60)
+                            r = requests.get(
+                                constants.ARXIV_PDF_URL.format(id=paper_id), timeout=60
+                            )
                             if r.status_code == 200:
                                 pdf_path.write_bytes(r.content)
                                 return True
@@ -262,7 +201,9 @@ async def load_papers_metadata(date: str) -> list[dict]:
 def format_available_dates(available: dict[str, int]) -> str:
     """Format available dates dict into a readable string."""
     if not available:
-        return "No papers downloaded yet. Use download_papers to fetch papers for a date."
+        return (
+            "No papers downloaded yet. Use download_papers to fetch papers for a date."
+        )
 
     lines = ["Available papers:"]
     for date, count in sorted(available.items(), reverse=True):
@@ -273,7 +214,10 @@ def format_available_dates(available: dict[str, int]) -> str:
 
 def papers_list_to_dict(papers: list[dict]) -> dict[str, dict]:
     """Convert list of papers to dict keyed by ID."""
-    return {p["id"]: {"title": p.get("title", ""), "summary": p.get("summary", "")} for p in papers}
+    return {
+        p["id"]: {"title": p.get("title", ""), "summary": p.get("summary", "")}
+        for p in papers
+    }
 
 
 def format_ranking_results(results: list[dict]) -> str:
@@ -313,7 +257,7 @@ def format_ranking_results(results: list[dict]) -> str:
 
         lines.append(f"**[{score}/10]** {r['title']}")
         lines.append(f"  - {r['reason']}")
-        paper_id = r['id']
+        paper_id = r["id"]
         hf_link = f"https://huggingface.co/papers/{paper_id}"
         arxiv_link = f"https://arxiv.org/abs/{paper_id}"
         lines.append(f"  - [HuggingFace]({hf_link}) | [arXiv]({arxiv_link})")

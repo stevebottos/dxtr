@@ -259,7 +259,7 @@ class TestRankingOutputFormat:
 # Date Range Rejection Tests (Unit Tests)
 # =============================================================================
 
-from dxtr.agents.master import RankPapersRequest
+from dxtr.data_models import RankPapersRequest
 
 
 class TestDateRangeRejection:
@@ -306,10 +306,11 @@ class TestDateRangeRejection:
         request = RankPapersRequest(date="2024-01-15")
         assert request.date == "2024-01-15"
 
-    def test_single_date_with_text_accepted(self):
-        """Single date with descriptive text should be accepted."""
-        request = RankPapersRequest(date="yesterday")
-        assert request.date == "yesterday"
+    def test_relative_date_rejected(self):
+        """Relative dates like 'yesterday' should be rejected (LLM must convert to YYYY-MM-DD)."""
+        with pytest.raises(ValueError) as exc_info:
+            RankPapersRequest(date="yesterday")
+        assert "YYYY-MM-DD" in str(exc_info.value)
 
 
 # =============================================================================

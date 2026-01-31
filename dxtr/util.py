@@ -1,7 +1,6 @@
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
-from dotenv import load_dotenv
-import os
+from pathlib import Path
 import json
 import asyncio
 
@@ -111,3 +110,56 @@ async def listdir_gcs(prefix: str) -> list[str]:
         return results
 
     return await asyncio.to_thread(_list)
+
+
+async def load_user_profile(user_id: str) -> str:
+    """Load synthesized profile from GCS.
+
+    Args:
+        user_id: User ID to load profile for
+
+    Returns:
+        Profile content as string, or error message if not found
+    """
+    profile_path = Path(constants.profiles_dir.format(user_id=user_id))
+    content = await read_from_gcs(str(profile_path / "synthesized_profile.md"))
+
+    if not content:
+        return f"No synthesized profile found for user {user_id}. Please create a profile first."
+
+    return content
+
+
+async def load_session_state(user_id: str):
+    """Load user's session state from GCS.
+
+    Checks which artifacts exist and loads profile content. Called at the start
+    of each turn to inject current state into the system prompt.
+
+    TODO: Migrate to database for faster reads.
+
+    Args:
+        user_id: User ID to load state for
+
+    Returns:
+        SessionState with current artifact status and profile content
+    """
+    from dxtr.data_models import SessionState
+
+    profile_dir = constants.profiles_dir.format(user_id=user_id)
+    files = await listdir_gcs(profile_dir)
+
+    has_profile = "synthesized_profile.md" in files
+    has_github = "github_summary.json" in files
+
+    # Load profile content if it exists
+    profile_content = None
+    if has_profile:
+        profile_path = Path(profile_dir) / "synthesized_profile.md"
+        profile_content = await read_from_gcs(str(profile_path))
+
+    return SessionState(
+        has_synthesized_profile=has_profile,
+        has_github_summary=has_github,
+        profile_content=profile_content or None,
+    )

@@ -1,44 +1,45 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
 import psycopg2
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field
 from pydantic_ai import Agent, RunContext
 
 from dxtr import (
-    master,
-    load_system_prompt,
+    constants,
+    data_models,
     get_model_settings,
     get_session_state,
-    update_session_state,
-    run_agent,
+    load_system_prompt,
     log_tool_usage,
+    master,
+    run_agent,
+    update_session_state,
+    util,
 )
-from dxtr.bus import send_to_user, send_internal
-from dxtr.agents.subagents import github_summarizer
-from dxtr.agents.subagents import profile_synthesis
-from dxtr.agents.subagents import papers_ranking
-from dxtr.agents.util import (
-    get_available_dates,
-    fetch_papers_for_date,
-    download_papers as do_download_papers,
-    load_papers_metadata,
-    format_available_dates,
-    papers_list_to_dict,
-    format_ranking_results,
-)
+from dxtr.agents.subagents import github_summarizer, papers_ranking, profile_synthesis
+from dxtr.agents.util import format_ranking_results
 from dxtr.db import PostgresHelper
-
-from dxtr import util, constants, data_models
+from dxtr.storage import get_store, get_session_key, create_and_store_artifact
 
 SYSTEM_PROMPT_BASE = load_system_prompt(Path(__file__).parent / "system.md")
 
-agent = Agent(master, deps_type=data_models.MasterRequest)
+
+# Agent outputs plain text. Artifacts are displayed via display_artifact tool.
+agent = Agent(
+    master,
+    deps_type=data_models.MasterRequest,
+    output_type=str,
+)
 
 
 @agent.system_prompt
 def build_system_prompt(ctx: RunContext[data_models.MasterRequest]) -> str:
     """Build system prompt with current user state and profile injected."""
+    from datetime import datetime
+
     state = get_session_state()
+    today = datetime.now(constants.PST).strftime("%Y-%m-%d")
 
     # Profile section - full content or "not created"
     if state.profile_content:
@@ -56,11 +57,18 @@ Not yet created. If the user wants personalized recommendations, help them creat
 """
 
     state_section = f"""
-# Current User State
+# Current State
+- Today's date: {today}
 - Profile exists: {state.has_synthesized_profile}
 - GitHub summary exists: {state.has_github_summary}
 """
-    return SYSTEM_PROMPT_BASE + state_section + profile_section
+
+    # Artifacts section - shows what's been computed this session
+    artifacts_section = state.get_artifact_prompt_section()
+    if artifacts_section:
+        artifacts_section = "\n" + artifacts_section
+
+    return SYSTEM_PROMPT_BASE + state_section + profile_section + artifacts_section
 
 
 @agent.tool
@@ -103,10 +111,7 @@ async def create_github_summary(
     return result.output
 
 
-from typing import List
-
-
-def extract_chat_only(messages: List) -> str:
+def extract_chat_only(messages: list) -> str:
     chat_lines = []
 
     for msg in messages:
@@ -157,71 +162,140 @@ async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -
     return result.output
 
 
-# === State Tools ===
+# === Artifact Tools ===
 
 
-@agent.tool_plain
+@agent.tool
 @log_tool_usage
-async def get_today() -> str:
-    """Get today's date in YYYY-MM-DD format (PST)."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+async def rank_daily_papers(
+    ctx: RunContext[data_models.MasterRequest],
+    date: str = Field(description="Date to rank papers for (YYYY-MM-DD format)"),
+    ranking_type: str = Field(
+        default="profile",
+        description="Type of ranking: 'profile' (personalized) or 'upvotes' (popularity)",
+    ),
+) -> str:
+    """Compute paper rankings for a date and store as an artifact.
 
-    return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+    Creates a cached artifact. After calling this, include the artifact_id in your
+    response to display the rankings to the user.
+
+    Only call when:
+    - User has a profile (for ranking_type='profile')
+    - User wants recommendations for a specific date
+    """
+    # Validate date format
+    data_models.validate_date_format(date)
+
+    session_key = get_session_key(ctx.deps.user_id, ctx.deps.session_id)
+
+    # Get profile from session state (required for profile-based ranking)
+    state = get_session_state()
+    if ranking_type == "profile" and not state.profile_content:
+        return "No profile found. Please create a profile first before ranking papers."
+    profile = state.profile_content
+
+    # Load papers from database
+    try:
+        db = PostgresHelper()
+        papers_dict = db.get_papers_for_ranking(date)
+    except psycopg2.Error as e:
+        return f"Database error loading papers: {e}"
+
+    if not papers_dict:
+        return f"No papers found for {date}. Use get_available_papers to check available dates."
+
+    if len(papers_dict) > constants.MAX_PAPERS_TO_RANK:
+        return f"Too many papers ({len(papers_dict)}) to rank. Maximum is {constants.MAX_PAPERS_TO_RANK}."
+
+    # Rank papers
+    print(f"Ranking {len(papers_dict)} papers for user {ctx.deps.user_id}...")
+    results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
+    rankings_content = format_ranking_results(results)
+
+    # Create artifact
+    summary = f"rankings from {date} based on {ranking_type}"
+    artifact_id = await create_and_store_artifact(
+        session_key=session_key,
+        content=rankings_content,
+        summary=summary,
+        artifact_type="rankings",
+    )
+
+    # Update session state with new artifact registry
+    store = get_store()
+    updated_state = await store.get_state(session_key)
+    update_session_state(artifact_registry=updated_state.artifact_registry,
+                         next_artifact_id=updated_state.next_artifact_id)
+
+    # Return summary for LLM context (not full content)
+    # Extract top papers for the summary
+    top_papers = results[:3] if len(results) >= 3 else results
+    top_summary = ", ".join([f"{r['title'][:40]}... ({r['score']}/10)" for r in top_papers])
+
+    return f"Ranked {len(results)} papers (artifact_id={artifact_id}). Top 3: {top_summary}"
+
+
+@agent.tool
+@log_tool_usage
+async def read_artifact(
+    ctx: RunContext[data_models.MasterRequest],
+    artifact_id: int = Field(description="ID of the artifact to read"),
+) -> str:
+    """Load an artifact's content into context for discussion.
+
+    Use this when you need to answer questions ABOUT the artifact, like:
+    - "What makes paper #3 relevant to me?"
+    - "Compare these two papers"
+    - "Explain the top recommendation"
+
+    This loads the full content into your context so you can discuss it.
+    """
+    session_key = get_session_key(ctx.deps.user_id, ctx.deps.session_id)
+    store = get_store()
+
+    artifact = await store.get_artifact(session_key, artifact_id)
+    if not artifact:
+        return f"Artifact {artifact_id} not found. Use the artifact IDs from Available Artifacts above."
+
+    return f"Content of artifact {artifact_id} ({artifact.meta.summary}):\n\n{artifact.content}"
+
+
+@agent.tool
+@log_tool_usage
+async def display_artifact(
+    ctx: RunContext[data_models.MasterRequest],
+    choice: int = Field(description="Artifact choice to display. See Available Artifacts in system prompt."),
+) -> str:
+    """Display an artifact to the user.
+
+    Call this when you want to SHOW an artifact to the user (e.g., rankings).
+    The artifact content will be included in the response automatically.
+
+    This does NOT load content into your context. Use read_artifact() if you
+    need to discuss or analyze the content.
+    """
+    session_key = get_session_key(ctx.deps.user_id, ctx.deps.session_id)
+    store = get_store()
+
+    artifact = await store.get_artifact(session_key, choice)
+    if not artifact:
+        return f"Artifact {choice} not found. Check Available Artifacts above for valid choices."
+
+    # Queue for display - server will include content in response
+    state = get_session_state()
+    state.queue_for_display(choice)
+    update_session_state(pending_display_artifacts=state.pending_display_artifacts)
+
+    return f"Artifact {choice} ({artifact.meta.summary}) queued for display."
 
 
 # === Paper Tools ===
 
 
-class GetPapersRequest(BaseModel):
-    days_back: int = Field(
-        default=7,
-        description="Number of days to look back for available papers.",
-    )
-
-
-class FetchPapersRequest(BaseModel):
-    date: str = Field(
-        description="Date to fetch papers for (format: YYYY-MM-DD).",
-        examples=["2024-01-15"],
-    )
-
-
-class DownloadPapersRequest(BaseModel):
-    date: str = Field(
-        description="Date to download papers for (format: YYYY-MM-DD).",
-        examples=["2024-01-15"],
-    )
-    paper_ids: list[str] | None = Field(
-        default=None,
-        description="Optional list of specific paper IDs to download. If None, downloads all papers for the date.",
-    )
-
-
-class RankPapersRequest(BaseModel):
-    date: str = Field(
-        description="Single date to rank papers for (format: YYYY-MM-DD). Only one day at a time.",
-        examples=["2024-01-15"],
-    )
-
-    @field_validator("date")
-    @classmethod
-    def validate_single_date(cls, v: str) -> str:
-        """Reject time span patterns - only single dates allowed."""
-        span_indicators = [" to ", " - ", "through", "between", ".."]
-        v_lower = v.lower()
-        for indicator in span_indicators:
-            if indicator in v_lower:
-                raise ValueError(
-                    f"Time spans are not supported. Please request a single day's papers "
-                    f"(e.g., '2024-01-15'). For multiple days, make separate requests."
-                )
-        return v
-
-
 @agent.tool_plain
 @log_tool_usage
-async def get_available_papers(request: GetPapersRequest) -> str:
+async def get_available_papers(request: data_models.GetPapersRequest) -> str:
     """Check what dates have papers available in our database.
 
     Returns a summary of dates and paper counts from the past N days.
@@ -246,16 +320,9 @@ async def get_available_papers(request: GetPapersRequest) -> str:
         return f"Database error: {e}"
 
 
-class GetPaperStatsRequest(BaseModel):
-    days_back: int = Field(
-        default=7,
-        description="Number of days to look back for statistics. Use a larger value (e.g., 30, 365) for broader queries.",
-    )
-
-
 @agent.tool_plain
 @log_tool_usage
-async def get_paper_stats(request: GetPaperStatsRequest) -> str:
+async def get_paper_stats(request: data_models.GetPaperStatsRequest) -> str:
     """Get aggregate statistics about papers in the database.
 
     Returns pre-computed totals and averages - use this for questions like:
@@ -289,20 +356,9 @@ async def get_paper_stats(request: GetPaperStatsRequest) -> str:
         return f"Database error: {e}"
 
 
-class GetTopPapersRequest(BaseModel):
-    date: str = Field(
-        description="Date to get papers for (format: YYYY-MM-DD).",
-        examples=["2024-01-15"],
-    )
-    limit: int = Field(
-        default=10,
-        description="Maximum number of papers to return.",
-    )
-
-
 @agent.tool_plain
 @log_tool_usage
-async def get_top_papers(request: GetTopPapersRequest) -> str:
+async def get_top_papers(request: data_models.GetTopPapersRequest) -> str:
     """Get the highest upvoted papers for a specific date.
 
     Returns papers sorted by upvotes (most popular first).
@@ -326,61 +382,3 @@ async def get_top_papers(request: GetTopPapersRequest) -> str:
         return f"Database error: {e}"
 
 
-@agent.tool
-@log_tool_usage
-async def rank_daily_papers(
-    ctx: RunContext[data_models.MasterRequest], request: RankPapersRequest
-) -> str:
-    """Rank papers for a SINGLE DATE against the user's profile.
-
-    Scores each paper 1-10 based on relevance to user's interests.
-
-    When to call:
-    - User asks for personalized paper recommendations for a specific day
-    - User originally asked for papers, and you just finished creating their profile
-
-    Constraints:
-    - SINGLE DAY ONLY - time spans are not supported
-    - Max ~60 papers per day
-    - User must have a synthesized profile
-
-    For date ranges, guide user to request one day at a time.
-    For queries like "best papers ever", ask which specific date to rank.
-    """
-    MAX_PAPERS_TO_RANK = 60
-
-    # Get profile from session state (already loaded at turn start)
-    state = get_session_state()
-    if not state.profile_content:
-        return f"No synthesized profile found for user {ctx.deps.user_id}. Please create a profile first."
-    profile = state.profile_content
-
-    # Load papers from database
-    try:
-        db = PostgresHelper()
-        papers_dict = db.get_papers_for_ranking(request.date)
-    except psycopg2.Error as e:
-        return f"Database error loading papers: {e}"
-
-    if not papers_dict:
-        return f"No papers found for {request.date}. Use get_available_papers to see available dates."
-
-    if len(papers_dict) > MAX_PAPERS_TO_RANK:
-        return f"Too many papers ({len(papers_dict)}) to rank at once. Maximum is {MAX_PAPERS_TO_RANK}. Please narrow down to a specific date."
-
-    # Rank papers in parallel using the ranking subagent
-    print(f"Ranking {len(papers_dict)} papers for user {ctx.deps.user_id}...")
-    results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
-
-    # Format results
-    rankings_text = format_ranking_results(results)
-
-    # Send rankings directly to user (bypasses LLM, preserves formatting)
-    send_to_user(rankings_text)
-
-    # Tell master to generate a followup
-    return (
-        f"Ranked {len(results)} papers for {request.date}. "
-        f"Rankings have been sent to the user. "
-        f"Generate a brief followup message (1-2 sentences)."
-    )

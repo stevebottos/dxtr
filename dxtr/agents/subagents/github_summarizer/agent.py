@@ -72,7 +72,8 @@ async def summarize_repos(ctx: RunContext[data_models.GithubSummarizerRequest]) 
                                 "content": content,
                             }
                         )
-                except Exception:
+                except Exception as e:
+                    print(f"Warning: Failed to read {py_file}: {e}")
                     continue
 
         if not all_files:

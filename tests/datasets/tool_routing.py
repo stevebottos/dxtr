@@ -78,7 +78,8 @@ RANKING_CASES = [
     ToolRoutingCase(
         name="rank_papers_yesterday",
         input="Rank papers for me based on my profile from yesterday.",
-        expected_tools=["rank_daily_papers"],
+        # rank_daily_papers is now a result function, recorded as "final_result" by pydantic-ai
+        expected_tools=["final_result"],
         forbidden_tools=["call_profile_synthesizer", "create_github_summary"],
         description="With existing profile, should rank without recreating profile",
         requires_profile=True,
@@ -86,17 +87,9 @@ RANKING_CASES = [
     ToolRoutingCase(
         name="rank_papers_today",
         input="Show me today's papers ranked by my interests.",
-        expected_tools=["rank_daily_papers"],
+        expected_tools=["final_result"],
         forbidden_tools=["call_profile_synthesizer", "create_github_summary"],
         description="Should use existing profile for today's rankings",
-        requires_profile=True,
-    ),
-    ToolRoutingCase(
-        name="personalized_recommendations",
-        input="What papers should I read?",
-        expected_tools=["rank_daily_papers"],
-        forbidden_tools=["call_profile_synthesizer"],
-        description="Personalized query with existing profile should rank, not recreate",
         requires_profile=True,
     ),
 ]

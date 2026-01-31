@@ -10,14 +10,13 @@ from fastapi import FastAPI, Depends, HTTPException, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic_ai.messages import ModelMessage
 
 from dxtr import set_session_id, set_session_state, get_model_settings, run_agent
-from dxtr.bus import setup_buses, teardown_buses, collect_user_content
+from dxtr import constants, data_models
+from dxtr.bus import setup_bus, teardown_bus
 from dxtr.agents.master import agent as main_agent
-from dxtr.agents.util import load_session_state
-from dxtr import data_models
 from dxtr.db import close_pool
+from dxtr.storage import get_store, get_session_key
 
 # =============================================================================
 # AUTHENTICATION (Static API Key)
@@ -44,16 +43,10 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Security(secu
 
 
 # =============================================================================
-# MEMORY (simple session-based message history)
+# SESSION LOCKS (storage handles data, we just need concurrency control)
 # =============================================================================
 
-# For now: simple in-memory session store (swap for Redis in production)
-_sessions: dict[str, list[ModelMessage]] = {}
 _session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-
-def get_session_key(user_id: str, session_id: str) -> str:
-    return f"{user_id}:{session_id}"
 
 
 # =============================================================================
@@ -91,17 +84,22 @@ api.add_middleware(
 )
 
 
-async def handle_query(request: data_models.MasterRequest) -> str:
+async def handle_query(request: data_models.MasterRequest) -> data_models.MasterResponse:
     """Process a query through the main agent with conversation history."""
+    from dxtr import get_session_state
+
     session_key = get_session_key(request.user_id, request.session_id)
+    store = get_store()
 
     set_session_id(request.session_id)
 
     async with _session_locks[session_key]:
-        state = await load_session_state(request.user_id)
+        # Load session state (includes artifact registry)
+        state = await store.get_state(session_key)
         set_session_state(state)
 
-        history = _sessions.get(session_key, [])
+        # Get message history
+        history = await store.get_history(session_key)
 
         result = await run_agent(
             main_agent,
@@ -111,9 +109,33 @@ async def handle_query(request: data_models.MasterRequest) -> str:
             model_settings=get_model_settings(),
         )
 
-        _sessions[session_key] = result.all_messages()
+        # Save updated message history
+        await store.save_history(session_key, result.all_messages())
 
-    return result.output
+    # Agent returns plain text
+    message = result.output
+
+    # Check session state for artifacts queued for display
+    state = get_session_state()
+    artifacts = []
+    for artifact_id in state.pending_display_artifacts:
+        artifact = await store.get_artifact(session_key, artifact_id)
+        if artifact:
+            artifacts.append(data_models.ArtifactDisplay(
+                id=artifact.id,
+                content=artifact.content,
+                artifact_type=artifact.meta.artifact_type,
+            ))
+
+    # Clear pending display for next turn (update stored state)
+    if state.pending_display_artifacts:
+        state.pending_display_artifacts = []
+        await store.save_state(session_key, state)
+
+    return data_models.MasterResponse(
+        message=message,
+        artifacts=artifacts,
+    )
 
 
 @api.post("/chat/stream")
@@ -123,10 +145,9 @@ async def chat_stream(
     """SSE streaming endpoint - sends events as the agent works."""
 
     async def event_generator():
-        # Set up both buses for this request
-        internal_queue, user_queue = setup_buses()
+        # Set up internal bus for status events
+        internal_queue = setup_bus()
         last_send = time.time()
-        KEEPALIVE_INTERVAL = 10
 
         # Immediate acknowledgment
         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
@@ -142,7 +163,7 @@ async def chat_stream(
                     yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
                     last_send = time.time()
                 except asyncio.TimeoutError:
-                    if time.time() - last_send >= KEEPALIVE_INTERVAL:
+                    if time.time() - last_send >= constants.KEEPALIVE_INTERVAL_SECONDS:
                         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Still working...'})}\n\n"
                         last_send = time.time()
                     continue
@@ -152,19 +173,16 @@ async def chat_stream(
                 event = internal_queue.get_nowait()
                 yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
 
-            # Get master's response
-            master_response = await agent_task
+            # Get agent's response
+            response = await agent_task
 
-            # Collect user bus content (e.g., rankings)
-            user_content = collect_user_content(user_queue)
-
-            # Build final answer: user content first, then master's followup
-            if user_content:
-                answer = "\n\n".join(user_content + [master_response])
-            else:
-                answer = master_response
-
-            yield f"event: done\ndata: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+            # Build response payload
+            done_payload = {
+                'type': 'done',
+                'message': response.message,
+                'artifacts': [a.model_dump() for a in response.artifacts],
+            }
+            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
 
         except asyncio.CancelledError:
             agent_task.cancel()
@@ -178,7 +196,7 @@ async def chat_stream(
                     await agent_task
                 except asyncio.CancelledError:
                     pass
-            teardown_buses()
+            teardown_bus()
 
     return StreamingResponse(
         event_generator(),

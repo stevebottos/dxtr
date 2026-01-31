@@ -4,7 +4,6 @@ import os
 from contextlib import contextmanager
 from datetime import date, timedelta
 
-import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 
@@ -144,10 +143,7 @@ class PostgresHelper:
             Dict of {paper_id: {title, summary}} for ranking agent
         """
         papers = self.get_papers_by_date(target_date)
-        return {
-            p["id"]: {"title": p["title"], "summary": p["summary"]}
-            for p in papers
-        }
+        return {p["id"]: {"title": p["title"], "summary": p["summary"]} for p in papers}
 
     def get_paper_stats(self, days_back: int = 7) -> dict:
         """Get aggregate statistics about papers.

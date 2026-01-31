@@ -1,10 +1,9 @@
 """
-This module just defines requests/responses relating to agent interfaces, not necessarily
-tool interfaces.
+This module defines requests/responses for agent interfaces.
 """
 
 import re
-from typing import List
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,7 +12,16 @@ from pydantic import BaseModel, Field, field_validator
 SAFE_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
-# These fields are set explicitly via tha chat interface
+def validate_date_format(v: str) -> str:
+    """Validate date is in YYYY-MM-DD format."""
+    try:
+        datetime.strptime(v, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"Date must be in YYYY-MM-DD format, got: {v}")
+    return v
+
+
+# These fields are set explicitly via the chat interface
 class MasterRequest(BaseModel):
     user_id: str
     session_id: str
@@ -34,8 +42,17 @@ class MasterRequest(BaseModel):
         return v
 
 
+class ArtifactDisplay(BaseModel):
+    """Artifact to be displayed by the frontend."""
+    id: int
+    content: str
+    artifact_type: str
+
+
 class MasterResponse(BaseModel):
-    answer: str
+    """Response sent to frontend."""
+    message: str  # Agent's text response
+    artifacts: list[ArtifactDisplay] = []  # Artifacts to display alongside message
 
 
 # These fields are set implicitly by the LLM, so we have descriptors for them
@@ -46,12 +63,7 @@ class ProfileSynthesisRequest(MasterRequest):
 
 
 class GithubSummarizerRequest(MasterRequest):
-    # base_url: str = Field(
-    #     description="GitHub profile BASE URL only, format: https://github.com/<username>. "
-    #     "Must NOT be a repository URL (e.g. https://github.com/user/repo).",
-    #     examples=["https://github.com/stevebottos", "https://github.com/anthropics"],
-    # )
-    repo_urls: List[str] = Field(
+    repo_urls: list[str] = Field(
         description="""A COMPLETE list of all GitHub repository URLs identified in the conversation.
         Collect every relevant URL into this single list before calling the tool.",
         format: https://github.com/<username>/<repo-name> (with or without .git)
@@ -67,7 +79,7 @@ class GithubSummarizerRequest(MasterRequest):
 
     @field_validator("repo_urls")
     @classmethod
-    def ensure_git_suffix(cls, urls: List[str]) -> List[str]:
+    def ensure_git_suffix(cls, urls: list[str]) -> list[str]:
         cleaned = []
         for url in urls:
             url = url.strip().rstrip("/")
@@ -83,14 +95,79 @@ class GithubSummarizerResponse(BaseModel):
     )
 
 
-class SessionState(BaseModel):
-    """User state loaded at the start of each turn.
+# SessionState is now in storage.py for clean separation
+# Re-export for backwards compatibility
+from dxtr.storage import SessionState, ArtifactMeta, ArtifactType
 
-    Injected into system prompt so the agent knows what artifacts exist
-    without needing to call a tool.
 
-    TODO: Migrate from GCS to database for faster reads.
-    """
-    has_synthesized_profile: bool = False
-    has_github_summary: bool = False
-    profile_content: str | None = None  # Full profile text, injected into system prompt
+# === Paper Tool Request Models ===
+
+
+class GetPapersRequest(BaseModel):
+    days_back: int = Field(
+        default=7,
+        description="Number of days to look back for available papers.",
+    )
+
+
+class FetchPapersRequest(BaseModel):
+    date: str = Field(
+        description="Date to fetch papers for (format: YYYY-MM-DD).",
+        examples=["2024-01-15"],
+    )
+    _validate_date = field_validator("date")(validate_date_format)
+
+
+class DownloadPapersRequest(BaseModel):
+    date: str = Field(
+        description="Date to download papers for (format: YYYY-MM-DD).",
+        examples=["2024-01-15"],
+    )
+    paper_ids: list[str] | None = Field(
+        default=None,
+        description="Optional list of specific paper IDs to download. If None, downloads all papers for the date.",
+    )
+    _validate_date = field_validator("date")(validate_date_format)
+
+
+class GetPaperStatsRequest(BaseModel):
+    days_back: int = Field(
+        default=7,
+        description="Number of days to look back for statistics. Use a larger value (e.g., 30, 365) for broader queries.",
+    )
+
+
+class GetTopPapersRequest(BaseModel):
+    date: str = Field(
+        description="Date to get papers for (format: YYYY-MM-DD).",
+        examples=["2024-01-15"],
+    )
+    limit: int = Field(
+        default=10,
+        description="Maximum number of papers to return.",
+    )
+    _validate_date = field_validator("date")(validate_date_format)
+
+
+class RankPapersRequest(BaseModel):
+    date: str = Field(
+        description="Single date to rank papers for (format: YYYY-MM-DD). Only one day at a time.",
+        examples=["2024-01-15"],
+    )
+
+    @field_validator("date")
+    @classmethod
+    def validate_single_date(cls, v: str) -> str:
+        """Reject time span patterns, then validate format."""
+        # Check for spans first (more helpful error message)
+        span_indicators = [" to ", " - ", "through", "between", ".."]
+        v_lower = v.lower()
+        for indicator in span_indicators:
+            if indicator in v_lower:
+                raise ValueError(
+                    f"Time spans are not supported. Please request a single day's papers "
+                    f"(e.g., '2024-01-15'). For multiple days, make separate requests."
+                )
+        # Then validate format
+        validate_date_format(v)
+        return v
