@@ -1,4 +1,6 @@
 # Python-generated files
+tests/artifacts
+dxtr/sessions
 __pycache__/
 *.py[oc]
 build/

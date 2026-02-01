@@ -1,11 +1,16 @@
 """Database helper for paper queries with connection pooling."""
 
+import json
 import os
 from contextlib import contextmanager
 from datetime import date, timedelta
 
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
+
+# TODO: Why do we have TTL here? Shouldn't this be assigned in the migration/table schema? I don't know, just checking
+# Rankings TTL in hours
+RANKINGS_TTL_HOURS = 24
 
 # Module-level connection pool (initialized lazily)
 _pool: ThreadedConnectionPool | None = None
@@ -53,7 +58,11 @@ class PostgresHelper:
     """Database helper for paper queries.
 
     Uses a shared connection pool for efficient connection management.
+    Automatically uses dev tables (e.g., dev_user_facts) when IS_DEV=1.
     """
+
+    def __init__(self):
+        self.use_dev_tables = os.getenv("IS_DEV", "1") == "1"
 
     def get_available_dates(self, days_back: int = 7) -> list[dict]:
         """Get dates that have papers, with counts.
@@ -217,3 +226,250 @@ class PostgresHelper:
             if row:
                 return {"date": str(row["date"]), "count": row["count"]}
             return None
+
+    # === Rankings Storage ===
+
+    def get_rankings(self, user_id: str, paper_date: str) -> list[dict] | None:
+        """Get cached rankings for a user and date.
+
+        Args:
+            user_id: User identifier
+            paper_date: Date string (YYYY-MM-DD) for the papers ranked
+
+        Returns:
+            List of ranked papers or None if not cached/expired
+        """
+        with get_connection() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                """
+                SELECT rankings FROM user_rankings
+                WHERE user_id = %s AND date = %s AND expires_at > NOW()
+                """,
+                (user_id, paper_date),
+            )
+            row = cur.fetchone()
+            cur.close()
+            if row:
+                return row["rankings"]
+            return None
+
+    def save_rankings(
+        self, user_id: str, paper_date: str, rankings: list[dict]
+    ) -> None:
+        """Save rankings for a user and date with TTL.
+
+        Args:
+            user_id: User identifier
+            paper_date: Date string (YYYY-MM-DD) for the papers ranked
+            rankings: List of ranked paper dicts
+        """
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                INSERT INTO user_rankings (user_id, date, rankings, expires_at)
+                VALUES (%s, %s, %s, NOW() + INTERVAL '{RANKINGS_TTL_HOURS} hours')
+                ON CONFLICT (user_id, date) DO UPDATE
+                SET rankings = EXCLUDED.rankings,
+                    expires_at = NOW() + INTERVAL '{RANKINGS_TTL_HOURS} hours'
+                """,
+                (user_id, paper_date, json.dumps(rankings)),
+            )
+            conn.commit()
+            cur.close()
+
+    def cleanup_expired_rankings(self) -> int:
+        """Delete expired rankings. Returns number of rows deleted."""
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM user_rankings WHERE expires_at < NOW()")
+            deleted = cur.rowcount
+            conn.commit()
+            cur.close()
+            return deleted
+
+    # === User Facts Storage ===
+
+    def _facts_table(self) -> str:
+        """Get the appropriate user facts table name."""
+        return "dev_user_facts" if self.use_dev_tables else "user_facts"
+
+    def store_user_fact(self, user_id: str, fact: str) -> int:
+        """Store a fact about a user.
+
+        Args:
+            user_id: User identifier
+            fact: The fact to store
+
+        Returns:
+            The ID of the inserted fact
+        """
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                INSERT INTO {self._facts_table()} (user_id, fact)
+                VALUES (%s, %s)
+                RETURNING id
+                """,
+                (user_id, fact),
+            )
+            fact_id = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            return fact_id
+
+    def get_user_facts(self, user_id: str) -> list[dict]:
+        """Get all facts for a user in chronological order.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            List of {id, fact, created_at} dicts ordered by created_at ascending
+        """
+        with get_connection() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                f"""
+                SELECT id, fact, created_at
+                FROM {self._facts_table()}
+                WHERE user_id = %s
+                ORDER BY created_at ASC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+            cur.close()
+            return [dict(row) for row in rows]
+
+    def query(self, query: str):
+        with get_connection() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(query)
+            rows = cur.fetchall()
+            cur.close()
+            return rows
+
+    def delete_user_facts(self, user_id: str) -> int:
+        """Delete all facts for a user. Useful for testing.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Number of facts deleted
+        """
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM {self._facts_table()} WHERE user_id = %s", (user_id,)
+            )
+            deleted = cur.rowcount
+            conn.commit()
+            cur.close()
+            return deleted
+
+    # === Paper Rankings Storage ===
+
+    def _rankings_table(self) -> str:
+        """Get the appropriate paper rankings table name."""
+        return (
+            "dev_user_paper_rankings" if self.use_dev_tables else "user_paper_rankings"
+        )
+
+    def save_paper_ranking(
+        self,
+        user_id: str,
+        paper_date: str,
+        paper_id: str,
+        ranking: int,
+        reason: str,
+        user_query: str | None = None,
+    ) -> int:
+        """Save a paper ranking for a user.
+
+        Args:
+            user_id: User identifier
+            paper_date: Date of the paper (YYYY-MM-DD)
+            paper_id: Paper identifier (e.g., arXiv ID)
+            ranking: Score 1-5
+            reason: Reason for the ranking
+            user_query: Optional user query that triggered the ranking
+
+        Returns:
+            The ID of the inserted/updated ranking
+        """
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                INSERT INTO {self._rankings_table()}
+                    (user_id, paper_date, paper_id, ranking, reason, user_query)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, paper_date, paper_id) DO UPDATE
+                SET ranking = EXCLUDED.ranking,
+                    reason = EXCLUDED.reason,
+                    user_query = EXCLUDED.user_query,
+                    created_at = NOW()
+                RETURNING id
+                """,
+                (user_id, paper_date, paper_id, ranking, reason, user_query),
+            )
+            ranking_id = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            return ranking_id
+
+    def get_paper_rankings(self, user_id: str, paper_date: str) -> list[dict]:
+        """Get all paper rankings for a user and date.
+
+        Args:
+            user_id: User identifier
+            paper_date: Date of the papers (YYYY-MM-DD)
+
+        Returns:
+            List of {paper_id, ranking, reason, created_at} dicts ordered by ranking descending
+        """
+        with get_connection() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                f"""
+                SELECT paper_id, ranking, reason, created_at
+                FROM {self._rankings_table()}
+                WHERE user_id = %s AND paper_date = %s
+                ORDER BY ranking DESC
+                """,
+                (user_id, paper_date),
+            )
+            rows = cur.fetchall()
+            cur.close()
+            return [dict(row) for row in rows]
+
+    def delete_paper_rankings(self, user_id: str, paper_date: str | None = None) -> int:
+        """Delete paper rankings for a user. Useful for testing.
+
+        Args:
+            user_id: User identifier
+            paper_date: Optional date to filter by. If None, deletes all rankings for user.
+
+        Returns:
+            Number of rankings deleted
+        """
+        with get_connection() as conn:
+            cur = conn.cursor()
+            if paper_date:
+                cur.execute(
+                    f"DELETE FROM {self._rankings_table()} WHERE user_id = %s AND paper_date = %s",
+                    (user_id, paper_date),
+                )
+            else:
+                cur.execute(
+                    f"DELETE FROM {self._rankings_table()} WHERE user_id = %s",
+                    (user_id,),
+                )
+            deleted = cur.rowcount
+            conn.commit()
+            cur.close()
+            return deleted

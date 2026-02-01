@@ -1,36 +1,47 @@
-"""DeepEval test configuration and shared fixtures."""
+"""Test configuration and shared fixtures."""
 
 import os
-import pytest
 import uuid
-from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from datetime import datetime
 
-from deepeval.test_case import LLMTestCase, ToolCall
+import pytest
+from dotenv import load_dotenv
 
-from dxtr import set_session_id, set_session_tags, set_session_metadata, set_session_state, get_model_settings
-from dxtr.util import load_session_state
-from dxtr.agents.master import agent
-from dxtr.data_models import MasterRequest, SessionState
+# Load env vars for database connection
+load_dotenv()
 
-from tests.fixtures import papers as paper_fixtures
+# Use dev tables during tests
+os.environ["IS_DEV"] = "1"
 
+# Enable deepeval test tracking
+os.environ["DEEPEVAL"] = "1"
 
-# =============================================================================
-# Test User Configuration
-# =============================================================================
-
-# Single user ID for the entire test session (simulates real user journey)
-TEST_USER_ID = f"deepeval_test_{uuid.uuid4().hex[:8]}"
-
-# Profile content for profile creation tests
-PROFILE_CONTENT = (Path(__file__).parent.parent / "testing_strat" / "profile.md").read_text()
+from dxtr.data_models import MasterRequest
+from dxtr.db import PostgresHelper
 
 
-# =============================================================================
-# Fixtures
-# =============================================================================
+# === DeepEval Result Saving ===
+
+
+def pytest_sessionstart(session):
+    """Enable deepeval to save test results to .deepeval folder."""
+    from deepeval.test_run import global_test_run_manager
+
+    global_test_run_manager.save_to_disk = True
+    global_test_run_manager.create_test_run(
+        identifier=f"test_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        file_name="tests",
+    )
+
+
+# Test user ID for the session
+TEST_USER_ID = f"test_user_{uuid.uuid4().hex[:8]}"
+
+# Load profile fixture for simulated user persona
+PROFILE_PATH = Path(__file__).parent.parent / "tests_old" / "fixtures" / "profile.md"
+PROFILE_CONTENT = PROFILE_PATH.read_text() if PROFILE_PATH.exists() else ""
+
 
 @pytest.fixture(scope="session")
 def test_user_id():
@@ -40,138 +51,37 @@ def test_user_id():
 
 @pytest.fixture
 def profile_content():
-    """Profile content for profile creation tests."""
+    """Profile content for simulated user."""
     return PROFILE_CONTENT
 
 
 @pytest.fixture
 def make_request(test_user_id):
     """Factory fixture to create MasterRequest with consistent user ID."""
+
     def _make_request(query: str, session_id: str | None = None) -> MasterRequest:
         return MasterRequest(
             user_id=test_user_id,
             session_id=session_id or f"session-{uuid.uuid4().hex[:8]}",
             query=query,
         )
+
     return _make_request
 
 
 @pytest.fixture
-async def setup_session(test_user_id):
-    """Setup session state and tracing for a test."""
-    async def _setup(phase: str, state: SessionState | None = None):
-        set_session_id(f"{phase}-{test_user_id}")
-        set_session_tags(["test", "deepeval"])
-        set_session_metadata({"phase": phase, "test_user_id": test_user_id})
+def db(test_user_id):
+    """Provide real database connection using dev tables.
 
-        if state:
-            set_session_state(state)
-        else:
-            # Load actual state from GCS
-            loaded_state = await load_session_state(test_user_id)
-            set_session_state(loaded_state)
-
-        return get_model_settings()
-
-    return _setup
-
-
-# =============================================================================
-# Database Mocking
-# =============================================================================
-
-class MockPostgresHelper:
-    """Mock database that uses fixture data with dynamic dates.
-
-    Papers are assigned dates relative to "today" at test time:
-    - First 8 papers -> today
-    - Next 8 papers -> yesterday
-
-    This allows testing date-aware queries without a real database.
+    Cleans up test user's data BEFORE test only (not after).
+    This allows inspection of test artifacts after the test run.
     """
+    helper = PostgresHelper()
 
-    def get_available_dates(self, days_back: int = 7) -> list[dict]:
-        return paper_fixtures.get_available_dates(days_back)
+    # Clean up before test only
+    helper.delete_user_facts(test_user_id)
+    helper.delete_paper_rankings(test_user_id)
 
-    def get_papers_by_date(self, target_date) -> list[dict]:
-        if isinstance(target_date, str):
-            target_date = date.fromisoformat(target_date)
-        return paper_fixtures.get_papers_for_date(target_date)
+    yield helper
 
-    def get_top_papers(self, target_date, limit: int = 10) -> list[dict]:
-        if isinstance(target_date, str):
-            target_date = date.fromisoformat(target_date)
-        return paper_fixtures.get_top_papers(target_date, limit)
-
-    def get_papers_for_ranking(self, target_date) -> dict[str, dict]:
-        if isinstance(target_date, str):
-            target_date = date.fromisoformat(target_date)
-        return paper_fixtures.get_papers_for_ranking(target_date)
-
-    def get_paper_stats(self, days_back: int = 7) -> dict:
-        return paper_fixtures.get_paper_stats(days_back)
-
-    def get_paper_count(self, days_back: int | None = None) -> int:
-        return 16
-
-    def get_date_with_most_papers(self, days_back: int = 7) -> dict | None:
-        today = date.today()
-        return {"date": today.isoformat(), "count": 8}
-
-
-@pytest.fixture(autouse=True)
-def mock_database():
-    """Automatically mock PostgresHelper for all tests."""
-    with patch("dxtr.db.PostgresHelper", MockPostgresHelper):
-        with patch("dxtr.agents.master.PostgresHelper", MockPostgresHelper):
-            yield
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def extract_tool_calls(messages) -> list[ToolCall]:
-    """Extract tool calls from agent message history as DeepEval ToolCall objects."""
-    tool_calls = []
-    for msg in messages:
-        for part in getattr(msg, "parts", []):
-            if hasattr(part, "tool_name") and part.tool_name is not None:
-                tool_calls.append(ToolCall(name=part.tool_name))
-    return tool_calls
-
-
-async def run_agent_and_build_test_case(
-    query: str,
-    request: MasterRequest,
-    expected_tools: list[str],
-    model_settings: dict | None = None,
-    message_history: list | None = None,
-) -> LLMTestCase:
-    """Run the agent and build a DeepEval LLMTestCase.
-
-    Args:
-        query: User input
-        request: MasterRequest with user/session info
-        expected_tools: List of tool names expected to be called
-        model_settings: Optional model settings
-        message_history: Optional conversation history
-
-    Returns:
-        LLMTestCase ready for DeepEval metrics
-    """
-    result = await agent.run(
-        query,
-        deps=request,
-        model_settings=model_settings or {},
-        message_history=message_history or [],
-    )
-
-    tools_called = extract_tool_calls(result.all_messages())
-
-    return LLMTestCase(
-        input=query,
-        actual_output=result.output,
-        tools_called=tools_called,
-        expected_tools=[ToolCall(name=t) for t in expected_tools],
-    )
+    # No cleanup after - allows inspection
