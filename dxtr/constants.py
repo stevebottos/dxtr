@@ -1,9 +1,15 @@
+"""Application constants."""
+
 import os
 
-blob_store_root = os.getenv("BLOB_STORE_URI", "")
+# Server config
+KEEPALIVE_INTERVAL_SECONDS = 10
 
-if not blob_store_root:
-    raise ValueError("BLOB_STORE_URI not set, dxtr can't do anything without it.")
+# LiteLLM
+BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
+API_KEY = os.environ.get("LITELLM_API_KEY")
 
-papers_dir = "daily_papers/{date}"
-profiles_dir = "profiles/{user_id}"
+if not API_KEY:
+    raise RuntimeError(
+        "LITELLM_API_KEY not set. See .env.example for required configuration."
+    )

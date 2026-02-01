@@ -1,386 +1,75 @@
 from pathlib import Path
-from tempfile import TemporaryDirectory
-import psycopg2
-from pydantic import BaseModel, Field, field_validator
+
+from pydantic import Field
 from pydantic_ai import Agent, RunContext
+from pydantic_ai_litellm import LiteLLMModel
 
-from dxtr import (
-    master,
-    load_system_prompt,
-    get_model_settings,
-    get_session_state,
-    update_session_state,
-    run_agent,
-    log_tool_usage,
-)
-from dxtr.bus import send_to_user, send_internal
-from dxtr.agents.subagents import github_summarizer
-from dxtr.agents.subagents import profile_synthesis
-from dxtr.agents.subagents import papers_ranking
-from dxtr.agents.util import (
-    get_available_dates,
-    fetch_papers_for_date,
-    download_papers as do_download_papers,
-    load_papers_metadata,
-    format_available_dates,
-    papers_list_to_dict,
-    format_ranking_results,
-)
-from dxtr.db import PostgresHelper
-
-from dxtr import util, constants, data_models
+from dxtr import constants, data_models, load_system_prompt
+from dxtr.agents.subagents.papers_ranking.agent import papers_agent
+from dxtr.bus import send_internal
 
 SYSTEM_PROMPT_BASE = load_system_prompt(Path(__file__).parent / "system.md")
 
-agent = Agent(master, deps_type=data_models.MasterRequest)
+agent = Agent(
+    LiteLLMModel(
+        model_name="openai/master",
+        api_key=constants.API_KEY,
+        api_base=constants.BASE_URL,
+    ),
+    deps_type=data_models.AgentDeps,
+    output_type=str,
+    system_prompt=SYSTEM_PROMPT_BASE,
+)
 
 
 @agent.system_prompt
-def build_system_prompt(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Build system prompt with current user state and profile injected."""
-    state = get_session_state()
-
-    # Profile section - full content or "not created"
-    if state.profile_content:
-        profile_section = f"""
-# User Profile
-The user's profile is loaded below. Use this to answer questions about them or for personalization.
-Do NOT call get_user_profile - the profile is already here.
-
-{state.profile_content}
-"""
-    else:
-        profile_section = """
-# User Profile
-Not yet created. If the user wants personalized recommendations, help them create a profile first.
-"""
-
-    state_section = f"""
-# Current User State
-- Profile exists: {state.has_synthesized_profile}
-- GitHub summary exists: {state.has_github_summary}
-"""
-    return SYSTEM_PROMPT_BASE + state_section + profile_section
+async def add_user_context(ctx: RunContext[data_models.AgentDeps]):
+    """Inject user profile facts and today's date from pre-fetched context."""
+    context = ctx.deps.context
+    return f"Today's date: {context.today_date}\n\n{context.user_profile_facts}"
 
 
 @agent.tool
-@log_tool_usage
-async def get_github_summary(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Retrieves the user's github summary from our database. If it's available, retrieve
-    the profile before producing the profile summary. If it's not available, recompute it."""
-    profile_path = Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
-    content = await util.read_json_from_gcs(str(profile_path / "github_summary.json"))
-
-    if not len(content):
-        print("NO GITHUB SUMMARY")
-        return "No github summary exists for the user in our database."
-
-    return f"The user's github summary is as follows:\n{content}"
-
-
-@agent.tool
-@log_tool_usage
-async def create_github_summary(
-    ctx: RunContext[data_models.MasterRequest], request: data_models.GithubSummarizerRequest
+async def store_user_fact(
+    ctx: RunContext[data_models.AgentDeps],
+    fact: str = Field(
+        description="A meaningful fact about the user (background, interests, goals, expertise, preferences)"
+    ),
 ) -> str:
-    """Analyze the repo or repos that a user has provided in order to summarize their skills/knowledge
-    based on the code. Should be called before attempting to create a profile.
+    """Store a fact learned about the user during conversation.
+
+    Use this when you learn something meaningful about the user that would be
+    useful for personalization.
+
+    Do NOT store transient conversation details or trivial observations.
+    Do NOT store redundant facts.
     """
-    if not len(request.repo_urls):
-        return "The user has not provided any repos to summarize."
-
-    dep = data_models.GithubSummarizerRequest(repo_urls=request.repo_urls, **ctx.deps.model_dump())
-    result = await run_agent(
-        github_summarizer.agent,
-        "Analyze the user's GitHub profile.",
-        deps=dep,
-        model_settings=get_model_settings(),
+    send_internal("tool", "Storing user fact...")
+    db = ctx.deps.db
+    fact_id = db.execute_returning(
+        f"INSERT INTO {db.facts_table} (user_id, fact) VALUES (%s, %s) RETURNING id",
+        (ctx.deps.request.user_id, fact),
     )
-
-    # Update session state so subsequent tools know github summary exists
-    update_session_state(has_github_summary=True)
-
-    return result.output
-
-
-from typing import List
-
-
-def extract_chat_only(messages: List) -> str:
-    chat_lines = []
-
-    for msg in messages:
-        for part in getattr(msg, "parts", []):
-            # Only include user content or tool outputs
-            if part.__class__.__name__ in ("UserPromptPart", "ToolReturnPart"):
-                chat_lines.append(part.content)
-
-    return "\n".join(chat_lines)
+    return f"Stored fact (id={fact_id})"
 
 
 @agent.tool
-@log_tool_usage
-async def call_profile_synthesizer(ctx: RunContext[data_models.MasterRequest]) -> str:
-    """Synthesize an enriched user profile from the conversation context.
-
-    Prerequisites:
-    - User has provided background, interests, and goals in the conversation
-    - If GitHub links were provided, create_github_summary should be called first
-
-    Call this when you have enough information to create a useful profile.
-    """
-
-    chat_history = extract_chat_only(ctx.messages)
-    result = await run_agent(
-        profile_synthesis.agent,
-        f"Create an enriched profile using the following chat: {chat_history}.",
-        deps=None,
-        model_settings=get_model_settings(),
-    )
-
-    # Save synthesized profile
-    with TemporaryDirectory() as tmp:
-        profile_file = Path(tmp) / "synthesized_profile.md"
-        profile_file.write_text(result.output)
-        await util.upload_to_gcs(
-            str(profile_file),
-            str(
-                Path(constants.profiles_dir.format(user_id=ctx.deps.user_id))
-                / "synthesized_profile.md"
-            ),
-        )
-    print(f"  Saved to {profile_file}")
-
-    # Update session state so subsequent tools know profile exists and have content
-    update_session_state(has_synthesized_profile=True, profile_content=result.output)
-
-    return result.output
-
-
-# === State Tools ===
-
-
-@agent.tool_plain
-@log_tool_usage
-async def get_today() -> str:
-    """Get today's date in YYYY-MM-DD format (PST)."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
-
-
-# === Paper Tools ===
-
-
-class GetPapersRequest(BaseModel):
-    days_back: int = Field(
-        default=7,
-        description="Number of days to look back for available papers.",
-    )
-
-
-class FetchPapersRequest(BaseModel):
-    date: str = Field(
-        description="Date to fetch papers for (format: YYYY-MM-DD).",
-        examples=["2024-01-15"],
-    )
-
-
-class DownloadPapersRequest(BaseModel):
-    date: str = Field(
-        description="Date to download papers for (format: YYYY-MM-DD).",
-        examples=["2024-01-15"],
-    )
-    paper_ids: list[str] | None = Field(
-        default=None,
-        description="Optional list of specific paper IDs to download. If None, downloads all papers for the date.",
-    )
-
-
-class RankPapersRequest(BaseModel):
-    date: str = Field(
-        description="Single date to rank papers for (format: YYYY-MM-DD). Only one day at a time.",
-        examples=["2024-01-15"],
-    )
-
-    @field_validator("date")
-    @classmethod
-    def validate_single_date(cls, v: str) -> str:
-        """Reject time span patterns - only single dates allowed."""
-        span_indicators = [" to ", " - ", "through", "between", ".."]
-        v_lower = v.lower()
-        for indicator in span_indicators:
-            if indicator in v_lower:
-                raise ValueError(
-                    f"Time spans are not supported. Please request a single day's papers "
-                    f"(e.g., '2024-01-15'). For multiple days, make separate requests."
-                )
-        return v
-
-
-@agent.tool_plain
-@log_tool_usage
-async def get_available_papers(request: GetPapersRequest) -> str:
-    """Check what dates have papers available in our database.
-
-    Returns a summary of dates and paper counts from the past N days.
-    Use this to see what papers are available before fetching or ranking.
-
-    NOTE: For aggregate queries like "how many papers total" or "what's the busiest day",
-    use get_paper_stats instead - it computes totals directly.
-    """
-    try:
-        db = PostgresHelper()
-        available = db.get_available_dates(days_back=request.days_back)
-
-        if not available:
-            return "No papers found in database. Papers may need to be fetched."
-
-        lines = ["Available papers in database:"]
-        for item in available:
-            lines.append(f"  {item['date']}: {item['count']} papers")
-
-        return "\n".join(lines)
-    except psycopg2.Error as e:
-        return f"Database error: {e}"
-
-
-class GetPaperStatsRequest(BaseModel):
-    days_back: int = Field(
-        default=7,
-        description="Number of days to look back for statistics. Use a larger value (e.g., 30, 365) for broader queries.",
-    )
-
-
-@agent.tool_plain
-@log_tool_usage
-async def get_paper_stats(request: GetPaperStatsRequest) -> str:
-    """Get aggregate statistics about papers in the database.
-
-    Returns pre-computed totals and averages - use this for questions like:
-    - "How many papers total do we have?"
-    - "How many papers from last week?"
-    - "What's the average upvotes?"
-    - "Which day had the most papers?"
-
-    This is more efficient than get_available_papers for aggregate queries
-    because it computes totals directly rather than listing each day.
-    """
-    try:
-        db = PostgresHelper()
-        stats = db.get_paper_stats(days_back=request.days_back)
-
-        if not stats or stats.get("total_papers", 0) == 0:
-            return f"No papers found in the last {request.days_back} days."
-
-        # Also get the busiest day
-        busiest = db.get_date_with_most_papers(days_back=request.days_back)
-        busiest_line = ""
-        if busiest:
-            busiest_line = f"\n  Busiest day: {busiest['date']} ({busiest['count']} papers)"
-
-        return f"""Paper statistics (last {request.days_back} days):
-  Total papers: {stats['total_papers']}
-  Days with papers: {stats['days_with_papers']}
-  Date range: {stats['earliest_date']} to {stats['latest_date']}
-  Average upvotes: {stats['avg_upvotes']}{busiest_line}"""
-    except psycopg2.Error as e:
-        return f"Database error: {e}"
-
-
-class GetTopPapersRequest(BaseModel):
-    date: str = Field(
-        description="Date to get papers for (format: YYYY-MM-DD).",
-        examples=["2024-01-15"],
-    )
-    limit: int = Field(
-        default=10,
-        description="Maximum number of papers to return.",
-    )
-
-
-@agent.tool_plain
-@log_tool_usage
-async def get_top_papers(request: GetTopPapersRequest) -> str:
-    """Get the highest upvoted papers for a specific date.
-
-    Returns papers sorted by upvotes (most popular first).
-    Use get_available_papers first to see what dates have papers.
-    """
-    try:
-        db = PostgresHelper()
-        papers = db.get_top_papers(request.date, request.limit)
-
-        if not papers:
-            return f"No papers found for {request.date}. Use get_available_papers to see available dates."
-
-        lines = [f"Top {len(papers)} papers for {request.date} (by upvotes):\n"]
-        for p in papers:
-            title = p["title"][:60] + "..." if len(p["title"]) > 60 else p["title"]
-            lines.append(f"  [{p['upvotes']} upvotes] {title}")
-            lines.append(f"    ID: {p['id']}")
-
-        return "\n".join(lines)
-    except psycopg2.Error as e:
-        return f"Database error: {e}"
-
-
-@agent.tool
-@log_tool_usage
-async def rank_daily_papers(
-    ctx: RunContext[data_models.MasterRequest], request: RankPapersRequest
+async def invoke_papers_rank_agent(
+    ctx: RunContext[data_models.AgentDeps],
+    date_to_rank: str = Field(description="Date of papers to rank (YYYY-MM-DD format)"),
+    query: str = Field(description="The user's original request about papers"),
 ) -> str:
-    """Rank papers for a SINGLE DATE against the user's profile.
+    """Delegate paper ranking to the papers agent.
 
-    Scores each paper 1-10 based on relevance to user's interests.
-
-    When to call:
-    - User asks for personalized paper recommendations for a specific day
-    - User originally asked for papers, and you just finished creating their profile
-
-    Constraints:
-    - SINGLE DAY ONLY - time spans are not supported
-    - Max ~60 papers per day
-    - User must have a synthesized profile
-
-    For date ranges, guide user to request one day at a time.
-    For queries like "best papers ever", ask which specific date to rank.
+    Use this when the user asks for paper recommendations or rankings.
+    The papers agent will decide the best ranking method.
     """
-    MAX_PAPERS_TO_RANK = 60
-
-    # Get profile from session state (already loaded at turn start)
-    state = get_session_state()
-    if not state.profile_content:
-        return f"No synthesized profile found for user {ctx.deps.user_id}. Please create a profile first."
-    profile = state.profile_content
-
-    # Load papers from database
-    try:
-        db = PostgresHelper()
-        papers_dict = db.get_papers_for_ranking(request.date)
-    except psycopg2.Error as e:
-        return f"Database error loading papers: {e}"
-
-    if not papers_dict:
-        return f"No papers found for {request.date}. Use get_available_papers to see available dates."
-
-    if len(papers_dict) > MAX_PAPERS_TO_RANK:
-        return f"Too many papers ({len(papers_dict)}) to rank at once. Maximum is {MAX_PAPERS_TO_RANK}. Please narrow down to a specific date."
-
-    # Rank papers in parallel using the ranking subagent
-    print(f"Ranking {len(papers_dict)} papers for user {ctx.deps.user_id}...")
-    results = await papers_ranking.rank_papers_parallel(profile, papers_dict)
-
-    # Format results
-    rankings_text = format_ranking_results(results)
-
-    # Send rankings directly to user (bypasses LLM, preserves formatting)
-    send_to_user(rankings_text)
-
-    # Tell master to generate a followup
-    return (
-        f"Ranked {len(results)} papers for {request.date}. "
-        f"Rankings have been sent to the user. "
-        f"Generate a brief followup message (1-2 sentences)."
+    send_internal("tool", f"Ranking papers for {date_to_rank}...")
+    deps = data_models.PapersRankDeps(
+        date_to_rank=date_to_rank,
+        user_profile=ctx.deps.context.user_profile_facts,
+        papers_by_date=ctx.deps.context.papers_by_date,
+        db=ctx.deps.db,
     )
+    result = await papers_agent.run(query, deps=deps)
+    return result.output

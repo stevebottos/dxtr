@@ -107,37 +107,3 @@ async def parallel_map(
                 pass
 
     return results  # type: ignore
-
-
-class ProgressReporter:
-    """Helper for subagents to report progress back to callers.
-
-    This provides a structured way for subagents to send updates during
-    long-running operations. Uses the event bus by default.
-
-    Example:
-        reporter = ProgressReporter()
-        reporter.update("Starting analysis...")
-        reporter.progress(1, 10, "Processed file 1")
-        reporter.complete("Analysis finished")
-    """
-
-    def update(self, message: str) -> None:
-        """Send a general status update."""
-        send_internal("status", message)
-
-    def progress(self, completed: int, total: int, detail: str = "") -> None:
-        """Send a progress update with completion count."""
-        pct = (completed / total * 100) if total > 0 else 0
-        msg = f"[{completed}/{total}] ({pct:.0f}%)"
-        if detail:
-            msg += f" {detail}"
-        send_internal("progress", msg)
-
-    def complete(self, message: str = "Done") -> None:
-        """Send a completion message."""
-        send_internal("status", f"✓ {message}")
-
-    def error(self, message: str) -> None:
-        """Send an error message."""
-        send_internal("error", message)

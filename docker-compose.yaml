@@ -29,7 +29,9 @@ services:
       - GOOGLE_CLOUD_PROJECT=${GCLOUD_PROJECT_ID}
       - LITELLM_BASE_URL=http://litellm:4000
       - LITELLM_API_KEY=${LITELLM_API_KEY}
-      - BLOB_STORE_URI=${BLOB_STORE_URI}
       - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - DXTR_API_KEY=${DXTR_API_KEY}
+      - IS_DEV=0
     depends_on:
       - litellm

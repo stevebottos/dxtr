@@ -1,36 +1,31 @@
 import asyncio
-from collections import defaultdict
 import json
 import os
 import time
-import uvicorn
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 
-from fastapi import FastAPI, Depends, HTTPException, Security, status
+import uvicorn
+from fastapi import Depends, FastAPI, HTTPException, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic_ai.messages import ModelMessage
 
-from dxtr import set_session_id, set_session_state, get_model_settings, run_agent
-from dxtr.bus import setup_buses, teardown_buses, collect_user_content
+from dxtr import constants, data_models
 from dxtr.agents.master import agent as main_agent
-from dxtr.agents.util import load_session_state
-from dxtr import data_models
-from dxtr.db import close_pool
-
-# =============================================================================
-# AUTHENTICATION (Static API Key)
-# =============================================================================
+from dxtr.bus import setup_bus, teardown_bus
+from dxtr.db import PostgresHelper, close_pool, get_conversation_store, flush_redis
 
 security = HTTPBearer(auto_error=False)
+
+# Shared database helper for production (is_dev=False)
+PROD_DB = PostgresHelper(is_dev=False)
 
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
     """Verify the static DXTR_API_KEY if set in environment."""
     expected_key = os.environ.get("DXTR_API_KEY")
 
-    # Skip verification if no key is configured (local dev mode)
     if not expected_key:
         return None
 
@@ -43,24 +38,6 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Security(secu
     return {"user": "admin"}
 
 
-# =============================================================================
-# MEMORY (simple session-based message history)
-# =============================================================================
-
-# For now: simple in-memory session store (swap for Redis in production)
-_sessions: dict[str, list[ModelMessage]] = {}
-_session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-
-def get_session_key(user_id: str, session_id: str) -> str:
-    return f"{user_id}:{session_id}"
-
-
-# =============================================================================
-# FASTAPI SERVER
-# =============================================================================
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Multi-agent system ready")
@@ -71,7 +48,6 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(title="Multi-Agent Server", lifespan=lifespan)
 
-# CORS configuration
 origins = [
     "https://dxtrchat.app",
     "https://www.dxtrchat.app",
@@ -91,29 +67,60 @@ api.add_middleware(
 )
 
 
-async def handle_query(request: data_models.MasterRequest) -> str:
-    """Process a query through the main agent with conversation history."""
-    session_key = get_session_key(request.user_id, request.session_id)
+# For tests
+async def dev_nuke_redis():
+    """Wipes the entire Redis database. Only use during testing."""
+    await flush_redis()
 
-    set_session_id(request.session_id)
 
-    async with _session_locks[session_key]:
-        state = await load_session_state(request.user_id)
-        set_session_state(state)
+def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddContext:
+    """Build AddContext for a user."""
+    facts = db.query(
+        f"SELECT id, fact, created_at FROM {db.facts_table} WHERE user_id = %s ORDER BY created_at ASC",
+        (user_id,),
+    )
 
-        history = _sessions.get(session_key, [])
+    if not facts:
+        user_profile_facts = "No facts stored about this user yet."
+    else:
+        lines = [f"Known facts about user ({len(facts)} total):"]
+        for f in facts:
+            timestamp = f["created_at"].strftime("%Y-%m-%d %H:%M")
+            lines.append(f"- [{timestamp}] {f['fact']}")
+        user_profile_facts = "\n".join(lines)
 
-        result = await run_agent(
-            main_agent,
-            request.query,
-            deps=request,
-            message_history=history,
-            model_settings=get_model_settings(),
-        )
+    today = date.today()
 
-        _sessions[session_key] = result.all_messages()
+    # Build a date reference table for the past week (LLMs are bad at date math)
+    date_lines = ["Date reference:"]
+    for days_ago in range(8):
+        d = today - timedelta(days=days_ago)
+        label = "today" if days_ago == 0 else "yesterday" if days_ago == 1 else f"{days_ago} days ago"
+        date_lines.append(f"  {d.strftime('%A')}: {d.isoformat()} ({label})")
+    today_str = "\n".join(date_lines)
 
-    return result.output
+    return data_models.AddContext(
+        user_profile_facts=user_profile_facts,
+        today_date=today_str,
+    )
+
+
+async def handle_query(
+    request: data_models.MasterRequest,
+    add_context: data_models.AddContext,
+    db: PostgresHelper,
+):
+    """Process a query through the main agent with Redis-backed conversation history."""
+
+    session_key = (request.user_id, request.session_id)
+    store = get_conversation_store()
+
+    history = await store.get_history(session_key)
+    deps = data_models.AgentDeps(request=request, context=add_context, db=db)
+    result = await main_agent.run(request.query, deps=deps, message_history=history)
+
+    await store.append(session_key, result.new_messages())
+    return result
 
 
 @api.post("/chat/stream")
@@ -121,50 +128,37 @@ async def chat_stream(
     request: data_models.MasterRequest, _token: dict = Depends(verify_token)
 ):
     """SSE streaming endpoint - sends events as the agent works."""
+    add_context = get_user_add_context(request.user_id, PROD_DB)
 
     async def event_generator():
-        # Set up both buses for this request
-        internal_queue, user_queue = setup_buses()
+        internal_queue = setup_bus()
         last_send = time.time()
-        KEEPALIVE_INTERVAL = 10
 
-        # Immediate acknowledgment
         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
         last_send = time.time()
 
-        agent_task = asyncio.create_task(handle_query(request))
+        agent_task = asyncio.create_task(handle_query(request, add_context, PROD_DB))
 
         try:
-            # Stream internal bus events while agent runs
             while not agent_task.done():
                 try:
                     event = await asyncio.wait_for(internal_queue.get(), timeout=0.5)
                     yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
                     last_send = time.time()
                 except asyncio.TimeoutError:
-                    if time.time() - last_send >= KEEPALIVE_INTERVAL:
+                    if time.time() - last_send >= constants.KEEPALIVE_INTERVAL_SECONDS:
                         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Still working...'})}\n\n"
                         last_send = time.time()
                     continue
 
-            # Drain remaining internal events
             while not internal_queue.empty():
                 event = internal_queue.get_nowait()
                 yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
 
-            # Get master's response
-            master_response = await agent_task
+            result = await agent_task
 
-            # Collect user bus content (e.g., rankings)
-            user_content = collect_user_content(user_queue)
-
-            # Build final answer: user content first, then master's followup
-            if user_content:
-                answer = "\n\n".join(user_content + [master_response])
-            else:
-                answer = master_response
-
-            yield f"event: done\ndata: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+            done_payload = {"type": "done", "message": result.output}
+            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
 
         except asyncio.CancelledError:
             agent_task.cancel()
@@ -178,13 +172,33 @@ async def chat_stream(
                     await agent_task
                 except asyncio.CancelledError:
                     pass
-            teardown_buses()
+            teardown_bus()
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@api.delete("/user/{user_id}/profile")
+async def clear_user_profile(user_id: str, _token: dict = Depends(verify_token)):
+    """Delete all stored facts for a user."""
+    count = PROD_DB.execute(
+        f"DELETE FROM {PROD_DB.facts_table} WHERE user_id = %s",
+        (user_id,),
+    )
+    return {"deleted": count}
+
+
+@api.delete("/user/{user_id}/history/{session_id}")
+async def clear_conversation_history(
+    user_id: str, session_id: str, _token: dict = Depends(verify_token)
+):
+    """Clear conversation history for a user's session."""
+    store = get_conversation_store()
+    await store.clear_session((user_id, session_id))
+    return {"cleared": True}
 
 
 @api.get("/health")

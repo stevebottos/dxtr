@@ -1,1 +1,1 @@
-"""DeepEval-based test suite for DXTR."""
+"""DXTR test suite."""
