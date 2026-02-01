@@ -1,6 +1,5 @@
 """Papers ranking agent - ranks papers by upvotes, profile, or custom request."""
 
-from datetime import date
 from pathlib import Path
 from typing import TypedDict
 
@@ -71,19 +70,15 @@ papers_agent = Agent(
 # === Helpers ===
 
 
-def _get_papers(
-    paper_date: str, papers_by_date: dict[str, list[dict]] | None = None
-) -> list[dict]:
-    """Get all papers for a date.
+def _get_papers(ctx: RunContext[data_models.PapersRankDeps]) -> list[dict]:
+    """Get all papers for a date from fixtures or DB."""
+    if ctx.deps.papers_by_date is not None:
+        return ctx.deps.papers_by_date.get(ctx.deps.date_to_rank, [])
 
-    If papers_by_date provided (testing), look up by date.
-    Otherwise fetches from DB.
-    """
-    if papers_by_date is not None:
-        return papers_by_date.get(paper_date, [])
-
-    db = PostgresHelper()
-    return db.get_papers_by_date(paper_date)
+    return ctx.deps.db.query(
+        "SELECT id, title, summary, authors, published_at, upvotes, date FROM papers WHERE date = %s ORDER BY upvotes DESC",
+        (ctx.deps.date_to_rank,),
+    )
 
 
 def _to_metadata(paper: dict) -> PaperMetadata:
@@ -97,7 +92,6 @@ def _to_metadata(paper: dict) -> PaperMetadata:
 
 
 def _format_metadata_list(papers: list[PaperMetadata]) -> str:
-    """Format paper metadata list as string for response."""
     lines = []
     for i, p in enumerate(papers, 1):
         lines.append(f"{i}. [{p['upvotes']} upvotes] {p['title']}")
@@ -105,7 +99,6 @@ def _format_metadata_list(papers: list[PaperMetadata]) -> str:
 
 
 def _format_scored_list(papers: list[ScoredPaper]) -> str:
-    """Format scored paper list as string for response."""
     lines = []
     for i, p in enumerate(papers, 1):
         lines.append(f"{i}. [{p['score']}/5] {p['title']}")
@@ -166,7 +159,7 @@ async def rank_by_upvotes(ctx: RunContext[data_models.PapersRankDeps]) -> str:
 
     Use when user wants popular papers or doesn't specify personalization.
     """
-    papers = _get_papers(ctx.deps.date_to_rank, ctx.deps.papers_by_date)
+    papers = _get_papers(ctx)
     if not papers:
         return f"No papers found for {ctx.deps.date_to_rank}."
 
@@ -183,7 +176,7 @@ async def rank_by_profile(ctx: RunContext[data_models.PapersRankDeps]) -> str:
     if not ctx.deps.user_profile or ctx.deps.user_profile.strip() == "":
         return "No user profile available. Cannot rank by profile."
 
-    papers = _get_papers(ctx.deps.date_to_rank, ctx.deps.papers_by_date)
+    papers = _get_papers(ctx)
     if not papers:
         return f"No papers found for {ctx.deps.date_to_rank}."
 
@@ -201,7 +194,7 @@ async def rank_by_request(
 
     Use when user asks for papers about a specific topic or question.
     """
-    papers = _get_papers(ctx.deps.date_to_rank, ctx.deps.papers_by_date)
+    papers = _get_papers(ctx)
     if not papers:
         return f"No papers found for {ctx.deps.date_to_rank}."
 

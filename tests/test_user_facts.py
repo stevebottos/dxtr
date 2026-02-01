@@ -38,6 +38,9 @@ from tests.conftest import PROFILE_CONTENT
 TEST_USER_ID = "steve_test"
 TEST_SESSION_ID = f"session_{uuid.uuid4().hex[:8]}"
 
+# Dev database for tests
+DEV_DB = PostgresHelper(is_dev=True)
+
 
 def make_request(query: str, session_id: str = TEST_SESSION_ID) -> MasterRequest:
     """Create a MasterRequest with fixed user ID."""
@@ -162,10 +165,9 @@ def extract_tool_calls(messages) -> list[str]:
 @pytest.fixture(scope="module")
 def db():
     """Database helper - cleans up test user at start."""
-    helper = PostgresHelper()
-    helper.delete_user_facts(TEST_USER_ID)
-    helper.delete_paper_rankings(TEST_USER_ID)
-    yield helper
+    DEV_DB.execute(f"DELETE FROM {DEV_DB.facts_table} WHERE user_id = %s", (TEST_USER_ID,))
+    DEV_DB.execute(f"DELETE FROM {DEV_DB.rankings_table} WHERE user_id = %s", (TEST_USER_ID,))
+    yield DEV_DB
 
 
 @pytest.fixture(scope="module")
@@ -211,8 +213,8 @@ async def test_01_multi_turn_builds_profile(db, conversation_state):
 
         # DXTR responds via handle_query (Redis-backed)
         request = make_request(user_message)
-        add_context = get_user_add_context(request.user_id)
-        result = await handle_query(request, add_context)
+        add_context = get_user_add_context(request.user_id, db)
+        result = await handle_query(request, add_context, db)
 
         dxtr_response = result.output
         dxtr_responses.append(dxtr_response)
@@ -270,7 +272,10 @@ Did DXTR ask targeted questions to build a user profile? Score 1-10 where:
 
     # === CRITERIA 2: DXTR should store facts ===
     store_calls = [t for t in all_tool_calls if t == "store_user_fact"]
-    stored_facts = db.get_user_facts(TEST_USER_ID)
+    stored_facts = db.query(
+        f"SELECT id, fact, created_at FROM {db.facts_table} WHERE user_id = %s ORDER BY created_at ASC",
+        (TEST_USER_ID,),
+    )
 
     print(f"\nstore_user_fact called {len(store_calls)} times")
     print(f"Stored facts ({len(stored_facts)}):")

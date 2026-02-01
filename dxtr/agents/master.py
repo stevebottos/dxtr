@@ -5,7 +5,6 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai_litellm import LiteLLMModel
 
 from dxtr import constants, data_models, load_system_prompt
-from dxtr.db import PostgresHelper
 from dxtr.agents.subagents.papers_ranking.agent import papers_agent
 
 SYSTEM_PROMPT_BASE = load_system_prompt(Path(__file__).parent / "system.md")
@@ -44,8 +43,11 @@ async def store_user_fact(
     Do NOT store transient conversation details or trivial observations.
     Do NOT store redundant facts.
     """
-    db = PostgresHelper()
-    fact_id = db.store_user_fact(ctx.deps.request.user_id, fact)
+    db = ctx.deps.db
+    fact_id = db.execute_returning(
+        f"INSERT INTO {db.facts_table} (user_id, fact) VALUES (%s, %s) RETURNING id",
+        (ctx.deps.request.user_id, fact),
+    )
     return f"Stored fact (id={fact_id})"
 
 
@@ -64,6 +66,7 @@ async def invoke_papers_rank_agent(
         date_to_rank=date_to_rank,
         user_profile=ctx.deps.context.user_profile_facts,
         papers_by_date=ctx.deps.context.papers_by_date,
+        db=ctx.deps.db,
     )
     result = await papers_agent.run(query, deps=deps)
     return result.output

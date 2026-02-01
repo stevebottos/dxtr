@@ -1,6 +1,5 @@
 """Test configuration and shared fixtures."""
 
-import os
 import uuid
 from pathlib import Path
 from datetime import datetime
@@ -11,14 +10,11 @@ from dotenv import load_dotenv
 # Load env vars for database connection
 load_dotenv()
 
-# Use dev tables during tests
-os.environ["IS_DEV"] = "1"
-
-# Enable deepeval test tracking
-os.environ["DEEPEVAL"] = "1"
-
 from dxtr.data_models import MasterRequest
 from dxtr.db import PostgresHelper
+
+# Shared dev database helper for all tests
+DEV_DB = PostgresHelper(is_dev=True)
 
 
 # === DeepEval Result Saving ===
@@ -26,6 +22,9 @@ from dxtr.db import PostgresHelper
 
 def pytest_sessionstart(session):
     """Enable deepeval to save test results to .deepeval folder."""
+    import os
+    os.environ["DEEPEVAL"] = "1"
+
     from deepeval.test_run import global_test_run_manager
 
     global_test_run_manager.save_to_disk = True
@@ -71,17 +70,15 @@ def make_request(test_user_id):
 
 @pytest.fixture
 def db(test_user_id):
-    """Provide real database connection using dev tables.
+    """Provide dev database helper.
 
     Cleans up test user's data BEFORE test only (not after).
     This allows inspection of test artifacts after the test run.
     """
-    helper = PostgresHelper()
-
     # Clean up before test only
-    helper.delete_user_facts(test_user_id)
-    helper.delete_paper_rankings(test_user_id)
+    DEV_DB.execute(f"DELETE FROM {DEV_DB.facts_table} WHERE user_id = %s", (test_user_id,))
+    DEV_DB.execute(f"DELETE FROM {DEV_DB.rankings_table} WHERE user_id = %s", (test_user_id,))
 
-    yield helper
+    yield DEV_DB
 
     # No cleanup after - allows inspection

@@ -14,6 +14,7 @@ from datetime import date
 from pydantic_ai.messages import ToolCallPart
 
 from dxtr.data_models import MasterRequest, AddContext
+from dxtr.db import PostgresHelper
 from dxtr.server import handle_query, dev_nuke_redis
 
 
@@ -22,6 +23,9 @@ from dxtr.server import handle_query, dev_nuke_redis
 TEST_USER_ID = "papers_test_user"
 TEST_SESSION_ID = "papers_test_session"
 TODAY = date.today().isoformat()
+
+# Dev database for tests
+DEV_DB = PostgresHelper(is_dev=True)
 
 SAMPLE_PROFILE = """Known facts about user (4 total):
 - User is a machine learning engineer with 7 years experience
@@ -161,7 +165,7 @@ async def test_tool_invocation():
         print(f"Expected invoke_papers_rank_agent: {should_invoke}")
 
         request = make_request(query)
-        result = await handle_query(request, context)
+        result = await handle_query(request, context, DEV_DB)
 
         tool_calls = extract_tool_calls(result.new_messages())
         did_invoke = "invoke_papers_rank_agent" in tool_calls
@@ -204,7 +208,7 @@ async def test_multi_turn_conversation():
     # === Turn 1: Rank by upvotes ===
     print("\n--- Turn 1: Rank by upvotes ---")
     request = make_request("Show me today's papers ranked by upvotes")
-    result = await handle_query(request, context)
+    result = await handle_query(request, context, DEV_DB)
 
     tool_calls = extract_tool_calls(result.new_messages())
     print(f"Tool calls: {tool_calls}")
@@ -218,7 +222,7 @@ async def test_multi_turn_conversation():
     # === Turn 2: Rank by profile ===
     print("\n--- Turn 2: Rank by profile ---")
     request = make_request("Now rank them based on my interests")
-    result = await handle_query(request, context)
+    result = await handle_query(request, context, DEV_DB)
 
     tool_calls = extract_tool_calls(result.new_messages())
     print(f"Tool calls: {tool_calls}")
@@ -231,7 +235,7 @@ async def test_multi_turn_conversation():
     request = make_request(
         "I need papers specifically about formal verification and mathematical foundations - can you rank today's papers for that topic?"
     )
-    result = await handle_query(request, context)
+    result = await handle_query(request, context, DEV_DB)
 
     tool_calls = extract_tool_calls(result.new_messages())
     print(f"Tool calls: {tool_calls}")
@@ -242,7 +246,7 @@ async def test_multi_turn_conversation():
     # === Turn 4: Follow-up about upvotes (NO tool call) ===
     print("\n--- Turn 4: Follow-up about upvotes ---")
     request = make_request("What was the third most upvoted paper?")
-    result = await handle_query(request, context)
+    result = await handle_query(request, context, DEV_DB)
 
     tool_calls = extract_tool_calls(result.new_messages())
     print(f"Tool calls: {tool_calls}")
@@ -260,7 +264,7 @@ async def test_multi_turn_conversation():
     request = make_request(
         "In the ranking based on my interests, which paper was ranked highest?"
     )
-    result = await handle_query(request, context)
+    result = await handle_query(request, context, DEV_DB)
 
     tool_calls = extract_tool_calls(result.new_messages())
     print(f"Tool calls: {tool_calls}")
@@ -275,7 +279,7 @@ async def test_multi_turn_conversation():
     request = make_request(
         "What about in the formal verification ranking - what was number one?"
     )
-    result = await handle_query(request, context)
+    result = await handle_query(request, context, DEV_DB)
 
     tool_calls = extract_tool_calls(result.new_messages())
     print(f"Tool calls: {tool_calls}")
