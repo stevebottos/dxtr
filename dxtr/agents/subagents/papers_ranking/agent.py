@@ -9,6 +9,7 @@ from pydantic_ai_litellm import LiteLLMModel
 
 from dxtr import constants, data_models, load_system_prompt
 from dxtr.agents.subagents.util import parallel_map
+from dxtr.bus import send_internal
 from dxtr.db import PostgresHelper
 
 
@@ -159,6 +160,7 @@ async def rank_by_upvotes(ctx: RunContext[data_models.PapersRankDeps]) -> str:
 
     Use when user wants popular papers or doesn't specify personalization.
     """
+    send_internal("tool", "Ranking papers by upvotes...")
     papers = _get_papers(ctx)
     if not papers:
         return f"No papers found for {ctx.deps.date_to_rank}."
@@ -173,6 +175,7 @@ async def rank_by_profile(ctx: RunContext[data_models.PapersRankDeps]) -> str:
 
     Use when user wants personalized recommendations based on their background.
     """
+    send_internal("tool", "Ranking papers by user profile...")
     if not ctx.deps.user_profile or ctx.deps.user_profile.strip() == "":
         return "No user profile available. Cannot rank by profile."
 
@@ -194,6 +197,7 @@ async def rank_by_request(
 
     Use when user asks for papers about a specific topic or question.
     """
+    send_internal("tool", f"Ranking papers by request: {request[:50]}...")
     papers = _get_papers(ctx)
     if not papers:
         return f"No papers found for {ctx.deps.date_to_rank}."

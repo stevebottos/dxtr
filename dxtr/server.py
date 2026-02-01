@@ -181,6 +181,26 @@ async def chat_stream(
     )
 
 
+@api.delete("/user/{user_id}/profile")
+async def clear_user_profile(user_id: str, _token: dict = Depends(verify_token)):
+    """Delete all stored facts for a user."""
+    count = PROD_DB.execute(
+        f"DELETE FROM {PROD_DB.facts_table} WHERE user_id = %s",
+        (user_id,),
+    )
+    return {"deleted": count}
+
+
+@api.delete("/user/{user_id}/history/{session_id}")
+async def clear_conversation_history(
+    user_id: str, session_id: str, _token: dict = Depends(verify_token)
+):
+    """Clear conversation history for a user's session."""
+    store = get_conversation_store()
+    await store.clear_session((user_id, session_id))
+    return {"cleared": True}
+
+
 @api.get("/health")
 async def health():
     return {"status": "ok"}

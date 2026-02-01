@@ -6,6 +6,7 @@ from pydantic_ai_litellm import LiteLLMModel
 
 from dxtr import constants, data_models, load_system_prompt
 from dxtr.agents.subagents.papers_ranking.agent import papers_agent
+from dxtr.bus import send_internal
 
 SYSTEM_PROMPT_BASE = load_system_prompt(Path(__file__).parent / "system.md")
 
@@ -43,6 +44,7 @@ async def store_user_fact(
     Do NOT store transient conversation details or trivial observations.
     Do NOT store redundant facts.
     """
+    send_internal("tool", "Storing user fact...")
     db = ctx.deps.db
     fact_id = db.execute_returning(
         f"INSERT INTO {db.facts_table} (user_id, fact) VALUES (%s, %s) RETURNING id",
@@ -62,6 +64,7 @@ async def invoke_papers_rank_agent(
     Use this when the user asks for paper recommendations or rankings.
     The papers agent will decide the best ranking method.
     """
+    send_internal("tool", f"Ranking papers for {date_to_rank}...")
     deps = data_models.PapersRankDeps(
         date_to_rank=date_to_rank,
         user_profile=ctx.deps.context.user_profile_facts,
