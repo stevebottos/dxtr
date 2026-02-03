@@ -32,6 +32,7 @@ class AgentDeps(BaseModel):
 class PapersRankDeps(BaseModel):
     """Dependencies for the papers ranking agent."""
 
+    user_id: str
     date_to_rank: str
     user_profile: str
     db: PostgresHelper

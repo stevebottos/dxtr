@@ -18,8 +18,9 @@ from dxtr.db import PostgresHelper, close_pool, get_conversation_store, flush_re
 
 security = HTTPBearer(auto_error=False)
 
-# Shared database helper for production (is_dev=False)
-PROD_DB = PostgresHelper(is_dev=False)
+# Use dev tables if DEV_USER_ID is set (local development)
+IS_DEV = bool(os.environ.get("DEV_USER_ID"))
+DB = PostgresHelper(is_dev=IS_DEV)
 
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
@@ -128,7 +129,7 @@ async def chat_stream(
     request: data_models.MasterRequest, _token: dict = Depends(verify_token)
 ):
     """SSE streaming endpoint - sends events as the agent works."""
-    add_context = get_user_add_context(request.user_id, PROD_DB)
+    add_context = get_user_add_context(request.user_id, DB)
 
     async def event_generator():
         internal_queue = setup_bus()
@@ -137,7 +138,7 @@ async def chat_stream(
         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
         last_send = time.time()
 
-        agent_task = asyncio.create_task(handle_query(request, add_context, PROD_DB))
+        agent_task = asyncio.create_task(handle_query(request, add_context, DB))
 
         try:
             while not agent_task.done():
@@ -184,8 +185,8 @@ async def chat_stream(
 @api.delete("/user/{user_id}/profile")
 async def clear_user_profile(user_id: str, _token: dict = Depends(verify_token)):
     """Delete all stored facts for a user."""
-    count = PROD_DB.execute(
-        f"DELETE FROM {PROD_DB.facts_table} WHERE user_id = %s",
+    count = DB.execute(
+        f"DELETE FROM {DB.facts_table} WHERE user_id = %s",
         (user_id,),
     )
     return {"deleted": count}
@@ -199,6 +200,76 @@ async def clear_conversation_history(
     store = get_conversation_store()
     await store.clear_session((user_id, session_id))
     return {"cleared": True}
+
+
+class DeleteRankingRequest(data_models.BaseModel):
+    date: str
+    criteria_key: str
+
+
+@api.delete("/rankings/{user_id}")
+async def delete_ranking_group(
+    user_id: str, request: DeleteRankingRequest, _token: dict = Depends(verify_token)
+):
+    """Delete a ranking group by date and criteria key."""
+    # criteria_key format: "profile:..." or "request:..."
+    criteria_type, criteria_prefix = request.criteria_key.split(":", 1)
+
+    count = DB.execute(
+        f"""
+        DELETE FROM {DB.rankings_table}
+        WHERE user_id = %s
+          AND paper_date = %s
+          AND ranking_criteria_type = %s
+          AND LEFT(ranking_criteria, 50) = %s
+        """,
+        (user_id, request.date, criteria_type, criteria_prefix),
+    )
+    return {"deleted": count}
+
+
+@api.get("/rankings/{user_id}")
+async def get_rankings(user_id: str, _token: dict = Depends(verify_token)):
+    """Get all rankings for a user, grouped by date and criteria type."""
+    rankings = DB.query(
+        f"""
+        SELECT r.paper_id, r.paper_date, r.ranking_criteria_type, r.ranking_criteria,
+               r.ranking, r.reason, r.created_at,
+               p.title, p.summary, p.authors, p.upvotes
+        FROM {DB.rankings_table} r
+        JOIN papers p ON r.paper_id = p.id
+        WHERE r.user_id = %s
+        ORDER BY r.paper_date DESC, r.ranking DESC
+        """,
+        (user_id,),
+    )
+
+    # Group by date and criteria type
+    grouped: dict = {}
+    for r in rankings:
+        date_key = r["paper_date"].isoformat()
+        criteria_key = f"{r['ranking_criteria_type']}:{r['ranking_criteria'][:50]}"
+
+        if date_key not in grouped:
+            grouped[date_key] = {}
+        if criteria_key not in grouped[date_key]:
+            grouped[date_key][criteria_key] = {
+                "criteria_type": r["ranking_criteria_type"],
+                "criteria": r["ranking_criteria"],
+                "papers": [],
+            }
+
+        grouped[date_key][criteria_key]["papers"].append({
+            "paper_id": r["paper_id"],
+            "title": r["title"],
+            "summary": r["summary"],
+            "authors": r["authors"],
+            "upvotes": r["upvotes"],
+            "ranking": r["ranking"],
+            "reason": r["reason"],
+        })
+
+    return {"rankings": grouped}
 
 
 @api.get("/health")

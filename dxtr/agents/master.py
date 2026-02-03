@@ -66,6 +66,7 @@ async def invoke_papers_rank_agent(
     """
     send_internal("tool", f"Ranking papers for {date_to_rank}...")
     deps = data_models.PapersRankDeps(
+        user_id=ctx.deps.request.user_id,
         date_to_rank=date_to_rank,
         user_profile=ctx.deps.context.user_profile_facts,
         papers_by_date=ctx.deps.context.papers_by_date,
