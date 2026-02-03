@@ -10,8 +10,17 @@ from dotenv import load_dotenv
 # Load env vars for database connection
 load_dotenv()
 
+import dxtr.db
 from dxtr.data_models import MasterRequest
 from dxtr.db import PostgresHelper
+
+
+@pytest.fixture(autouse=True)
+def reset_redis_between_tests():
+    """Reset Redis singleton between tests to avoid event loop conflicts."""
+    dxtr.db._redis = None
+    yield
+    dxtr.db._redis = None
 
 # Shared dev database helper for all tests
 DEV_DB = PostgresHelper(is_dev=True)

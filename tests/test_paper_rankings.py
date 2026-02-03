@@ -20,7 +20,7 @@ from dxtr.server import handle_query, dev_nuke_redis
 
 # === Test Configuration ===
 
-TEST_USER_ID = "papers_test_user"
+TEST_USER_ID = "dev_user_steve"
 TEST_SESSION_ID = "papers_test_session"
 TODAY = date.today().isoformat()
 
@@ -133,6 +133,20 @@ def response_contains(response: str, text: str) -> bool:
     return normalize_text(text.lower()) in normalize_text(response.lower())
 
 
+def get_stored_rankings(user_id: str, paper_date: str, criteria_type: str | None = None) -> list[dict]:
+    """Get rankings from the database for verification."""
+    table = DEV_DB.rankings_table
+    if criteria_type:
+        return DEV_DB.query(
+            f"SELECT * FROM {table} WHERE user_id = %s AND paper_date = %s AND ranking_criteria_type = %s ORDER BY ranking DESC",
+            (user_id, paper_date, criteria_type),
+        )
+    return DEV_DB.query(
+        f"SELECT * FROM {table} WHERE user_id = %s AND paper_date = %s ORDER BY ranking DESC",
+        (user_id, paper_date),
+    )
+
+
 # === Test 1: Tool Invocation ===
 
 INVOCATION_TEST_CASES = [
@@ -230,6 +244,13 @@ async def test_multi_turn_conversation():
 
     assert "invoke_papers_rank_agent" in tool_calls, "Should invoke papers agent"
 
+    # Verify profile rankings stored in DB
+    profile_rankings = get_stored_rankings(TEST_USER_ID, TODAY, "profile")
+    print(f"Profile rankings in DB: {len(profile_rankings)} papers")
+    assert len(profile_rankings) > 0, "Profile rankings should be stored in database"
+    assert all(r["ranking_criteria_type"] == "profile" for r in profile_rankings)
+    assert all(r["ranking_criteria_hash"] is not None for r in profile_rankings)
+
     # === Turn 3: Rank by different criteria (specific request) ===
     print("\n--- Turn 3: Rank for formal verification topic ---")
     request = make_request(
@@ -242,6 +263,13 @@ async def test_multi_turn_conversation():
     print(f"Response preview: {result.output[:200]}...")
 
     assert "invoke_papers_rank_agent" in tool_calls, "Should invoke papers agent"
+
+    # Verify request rankings stored in DB
+    request_rankings = get_stored_rankings(TEST_USER_ID, TODAY, "request")
+    print(f"Request rankings in DB: {len(request_rankings)} papers")
+    assert len(request_rankings) > 0, "Request rankings should be stored in database"
+    assert all(r["ranking_criteria_type"] == "request" for r in request_rankings)
+    assert all(r["ranking_criteria_hash"] is None for r in request_rankings)
 
     # === Turn 4: Follow-up about upvotes (NO tool call) ===
     print("\n--- Turn 4: Follow-up about upvotes ---")
@@ -288,6 +316,14 @@ async def test_multi_turn_conversation():
     assert (
         "invoke_papers_rank_agent" not in tool_calls
     ), "Should NOT re-invoke papers agent for follow-up"
+
+    # === Final verification: rankings persist in DB ===
+    print("\n--- Final verification: rankings persist ---")
+    all_rankings = get_stored_rankings(TEST_USER_ID, TODAY)
+    profile_count = len([r for r in all_rankings if r["ranking_criteria_type"] == "profile"])
+    request_count = len([r for r in all_rankings if r["ranking_criteria_type"] == "request"])
+    print(f"Total rankings in DB: {len(all_rankings)} (profile: {profile_count}, request: {request_count})")
+    assert len(all_rankings) > 0, "Rankings should persist in database"
 
     print(f"\n{'=' * 60}")
     print("All turns completed successfully!")

@@ -25,36 +25,52 @@ def create_schema():
         CREATE TABLE IF NOT EXISTS user_paper_rankings (
             id SERIAL PRIMARY KEY,
             user_id VARCHAR NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
+            paper_id VARCHAR NOT NULL REFERENCES papers(id),
             paper_date DATE NOT NULL,
-            paper_id VARCHAR NOT NULL,
-            user_query TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            ranking_criteria_type VARCHAR NOT NULL CHECK (ranking_criteria_type IN ('profile', 'request')),
+            ranking_criteria TEXT NOT NULL,
+            ranking_criteria_hash VARCHAR,
             ranking INT NOT NULL CHECK (ranking >= 1 AND ranking <= 5),
-            reason TEXT,
-            UNIQUE(user_id, paper_date, paper_id)
+            reason TEXT
         )
         """,
+        # Uniqueness for profile-based rankings (partial index)
         """
-        CREATE INDEX IF NOT EXISTS idx_user_paper_rankings_user_date
-        ON user_paper_rankings(user_id, paper_date)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_paper_rankings_profile_unique
+        ON user_paper_rankings(user_id, paper_date, paper_id, ranking_criteria_hash)
+        WHERE ranking_criteria_type = 'profile'
+        """,
+        # Lookup index
+        """
+        CREATE INDEX IF NOT EXISTS idx_user_paper_rankings_lookup
+        ON user_paper_rankings(user_id, paper_date, ranking_criteria_type)
         """,
         # Development table (same schema)
         """
         CREATE TABLE IF NOT EXISTS dev_user_paper_rankings (
             id SERIAL PRIMARY KEY,
             user_id VARCHAR NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
+            paper_id VARCHAR NOT NULL REFERENCES papers(id),
             paper_date DATE NOT NULL,
-            paper_id VARCHAR NOT NULL,
-            user_query TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            ranking_criteria_type VARCHAR NOT NULL CHECK (ranking_criteria_type IN ('profile', 'request')),
+            ranking_criteria TEXT NOT NULL,
+            ranking_criteria_hash VARCHAR,
             ranking INT NOT NULL CHECK (ranking >= 1 AND ranking <= 5),
-            reason TEXT,
-            UNIQUE(user_id, paper_date, paper_id)
+            reason TEXT
         )
         """,
+        # Uniqueness for profile-based rankings (partial index) - dev
         """
-        CREATE INDEX IF NOT EXISTS idx_dev_user_paper_rankings_user_date
-        ON dev_user_paper_rankings(user_id, paper_date)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dev_user_paper_rankings_profile_unique
+        ON dev_user_paper_rankings(user_id, paper_date, paper_id, ranking_criteria_hash)
+        WHERE ranking_criteria_type = 'profile'
+        """,
+        # Lookup index - dev
+        """
+        CREATE INDEX IF NOT EXISTS idx_dev_user_paper_rankings_lookup
+        ON dev_user_paper_rankings(user_id, paper_date, ranking_criteria_type)
         """,
     )
     conn = None
