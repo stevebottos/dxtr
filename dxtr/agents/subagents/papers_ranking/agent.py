@@ -1,6 +1,5 @@
-"""Papers ranking agent - ranks papers by upvotes, profile, or custom request."""
+"""Papers ranking agent - ranks papers by user profile."""
 
-import hashlib
 from pathlib import Path
 from typing import TypedDict
 
@@ -11,18 +10,9 @@ from pydantic_ai_litellm import LiteLLMModel
 from dxtr import constants, data_models, load_system_prompt
 from dxtr.agents.subagents.util import parallel_map
 from dxtr.bus import send_internal
-from dxtr.db import PostgresHelper
 
 
 # === Data Types ===
-
-
-class PaperMetadata(TypedDict):
-    id: str
-    title: str
-    summary: str
-    authors: list[str]
-    upvotes: int
 
 
 class ScoredPaper(TypedDict):
@@ -72,55 +62,10 @@ papers_agent = Agent(
 # === Helpers ===
 
 
-def _hash_profile(profile: str) -> str:
-    """Deterministic hash of profile text for cache lookup."""
-    return hashlib.sha256(profile.strip().encode()).hexdigest()[:16]
-
-
-def _request_similarity(a: str, b: str) -> float:
-    """Simple word overlap similarity between two requests."""
-    words_a = set(a.lower().split())
-    words_b = set(b.lower().split())
-    if not words_a or not words_b:
-        return 0.0
-    intersection = words_a & words_b
-    union = words_a | words_b
-    return len(intersection) / len(union)  # Jaccard similarity
-
-
-def _find_similar_request(
-    ctx: RunContext[data_models.PapersRankDeps],
-    new_request: str,
-    threshold: float = 0.6,
-) -> str | None:
-    """Find a similar existing request criteria. Returns the criteria if found."""
-    db = ctx.deps.db
-    table = db.rankings_table
-
-    # Get distinct request criteria for this user/date
-    rows = db.query(
-        f"""
-        SELECT DISTINCT ranking_criteria
-        FROM {table}
-        WHERE user_id = %s AND paper_date = %s AND ranking_criteria_type = 'request'
-        """,
-        (ctx.deps.user_id, ctx.deps.date_to_rank),
-    )
-
-    for row in rows:
-        existing = row["ranking_criteria"]
-        if _request_similarity(new_request, existing) >= threshold:
-            return existing
-
-    return None
-
-
 def _store_rankings(
     ctx: RunContext[data_models.PapersRankDeps],
     scored_papers: list[ScoredPaper],
-    criteria_type: str,
     criteria: str,
-    criteria_hash: str | None,
 ) -> None:
     """Store scored papers to the rankings table."""
     db = ctx.deps.db
@@ -129,62 +74,20 @@ def _store_rankings(
         db.execute(
             f"""
             INSERT INTO {table}
-            (user_id, paper_id, paper_date, ranking_criteria_type, ranking_criteria, ranking_criteria_hash, ranking, reason)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (user_id, paper_id, paper_date, ranking_criteria_type, ranking_criteria, ranking, reason)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
                 ctx.deps.user_id,
                 paper["id"],
                 ctx.deps.date_to_rank,
-                criteria_type,
+                "profile",
                 criteria,
-                criteria_hash,
                 paper["score"],
                 paper["reason"],
             ),
         )
-
-
-def _get_cached_rankings(
-    ctx: RunContext[data_models.PapersRankDeps],
-    criteria_type: str,
-    criteria_hash: str | None = None,
-    criteria_text: str | None = None,
-) -> list[dict] | None:
-    """Retrieve cached rankings from DB. Returns None if not found."""
-    db = ctx.deps.db
-    table = db.rankings_table
-
-    if criteria_type == "profile" and criteria_hash:
-        rows = db.query(
-            f"""
-            SELECT r.paper_id, r.ranking, r.reason, p.title, p.summary, p.authors, p.upvotes
-            FROM {table} r
-            JOIN papers p ON r.paper_id = p.id
-            WHERE r.user_id = %s AND r.paper_date = %s
-              AND r.ranking_criteria_type = %s AND r.ranking_criteria_hash = %s
-            ORDER BY r.ranking DESC
-            """,
-            (ctx.deps.user_id, ctx.deps.date_to_rank, criteria_type, criteria_hash),
-        )
-        return rows if rows else None
-
-    if criteria_type == "request" and criteria_text:
-        rows = db.query(
-            f"""
-            SELECT r.paper_id, r.ranking, r.reason, p.title, p.summary, p.authors, p.upvotes
-            FROM {table} r
-            JOIN papers p ON r.paper_id = p.id
-            WHERE r.user_id = %s AND r.paper_date = %s
-              AND r.ranking_criteria_type = %s AND r.ranking_criteria = %s
-            ORDER BY r.ranking DESC
-            """,
-            (ctx.deps.user_id, ctx.deps.date_to_rank, criteria_type, criteria_text),
-        )
-        return rows if rows else None
-
-    return None
 
 
 def _get_papers(ctx: RunContext[data_models.PapersRankDeps]) -> list[dict]:
@@ -198,32 +101,7 @@ def _get_papers(ctx: RunContext[data_models.PapersRankDeps]) -> list[dict]:
     )
 
 
-def _to_metadata(paper: dict) -> PaperMetadata:
-    return PaperMetadata(
-        id=paper["id"],
-        title=paper["title"],
-        summary=paper["summary"],
-        authors=paper.get("authors", []),
-        upvotes=paper.get("upvotes", 0),
-    )
-
-
-def _format_metadata_list(papers: list[PaperMetadata]) -> str:
-    lines = []
-    for i, p in enumerate(papers, 1):
-        lines.append(f"{i}. [{p['upvotes']} upvotes] {p['title']}")
-    return "\n".join(lines)
-
-
-def _format_scored_list(papers: list[ScoredPaper]) -> str:
-    lines = []
-    for i, p in enumerate(papers, 1):
-        lines.append(f"{i}. [{p['score']}/5] {p['title']}")
-        lines.append(f"   {p['reason']}")
-    return "\n".join(lines)
-
-
-def _format_summary(papers: list[dict] | list[ScoredPaper], description: str) -> str:
+def _format_summary(papers: list[ScoredPaper], description: str) -> str:
     """Format summary + top 5 abstracts for master agent."""
     total = len(papers)
     top_5 = papers[:5]
@@ -232,12 +110,10 @@ def _format_summary(papers: list[dict] | list[ScoredPaper], description: str) ->
     lines.append("")
     lines.append("Top 5 papers:")
     for i, p in enumerate(top_5, 1):
-        score = p.get("score") or p.get("ranking", "?")
-        lines.append(f"{i}. [{score}/5] {p['title']}")
+        lines.append(f"{i}. [{p['score']}/5] {p['title']}")
         lines.append(f"   Reason: {p['reason']}")
-        summary = p.get("summary", "")
-        if summary:
-            lines.append(f"   Abstract: {summary}")
+        if p["summary"]:
+            lines.append(f"   Abstract: {p['summary']}")
         lines.append("")
 
     return "\n".join(lines)
@@ -284,87 +160,80 @@ async def _score_papers(papers: list[dict], scoring_context: str) -> list[Scored
             )
 
     results = await parallel_map(papers, score_one, desc="Scoring papers")
-    return sorted(results, key=lambda x: x["score"], reverse=True)
+    failed = [r for r in results if r["score"] == 0]
+    scored = [r for r in results if r["score"] > 0]
+
+    if failed:
+        titles = [f["title"][:50] for f in failed]
+        send_internal(
+            "warning", f"Failed to score {len(failed)}/{len(results)} papers: {titles}"
+        )
+
+    return sorted(scored, key=lambda x: x["score"], reverse=True)
 
 
 # === Tools ===
 
 
 @papers_agent.tool
-async def rank_by_upvotes(ctx: RunContext[data_models.PapersRankDeps]) -> str:
-    """Rank papers by community upvotes (popularity).
+async def rank(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Score and rank all papers for a date by relevance to the user's profile.
 
-    Use when user wants popular papers or doesn't specify personalization.
+    Only call this for an initial ranking request (e.g. "Rank papers").
+    Do NOT call this for follow-ups, discussion, or questions about existing rankings — use retrieve instead.
     """
-    send_internal("tool", "Ranking papers by upvotes...")
+    profile = ctx.deps.user_profile
+    if not profile or not profile.strip():
+        return "No user profile available. Suggest the user chat about their interests first so you can build a profile."
+
+    send_internal("tool", "Ranking papers by profile...")
+
     papers = _get_papers(ctx)
     if not papers:
         return f"No papers found for {ctx.deps.date_to_rank}."
 
-    metadata = [_to_metadata(p) for p in papers]
-    return _format_metadata_list(metadata)
+    print(f"Ranking {len(papers)} papers by user profile...")
+    scored = await _score_papers(papers, f"User Profile:\n{profile}")
+
+    _store_rankings(ctx, scored, profile)
+
+    return _format_summary(scored, "profile-based ranking")
 
 
 @papers_agent.tool
-async def rank_by_profile(ctx: RunContext[data_models.PapersRankDeps]) -> str:
-    """Rank papers by relevance to user's profile/interests.
+async def retrieve(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Retrieve existing rankings from the database for discussion or comparison.
 
-    Use when user wants personalized recommendations based on their background.
+    Call this for any question about previously ranked papers — comparisons, explanations, details, etc.
     """
-    send_internal("tool", "Ranking papers by user profile...")
-    if not ctx.deps.user_profile or ctx.deps.user_profile.strip() == "":
-        return "No profile found. Suggest the user either: (1) ask for papers on a specific topic, or (2) chat about their interests first so you can learn about them."
-
-    profile_hash = _hash_profile(ctx.deps.user_profile)
-
-    # Check for cached rankings
-    cached = _get_cached_rankings(ctx, "profile", profile_hash)
-    if cached:
-        print(f"Found cached profile rankings for {ctx.deps.date_to_rank}")
-        return _format_summary(cached, f"profile-based rankings for {ctx.deps.date_to_rank}")
-
-    # Compute new rankings
-    papers = _get_papers(ctx)
-    if not papers:
-        return f"No papers found for {ctx.deps.date_to_rank}."
-
-    print(f"Ranking {len(papers)} papers by profile...")
-    scored = await _score_papers(papers, f"User Profile:\n{ctx.deps.user_profile}")
-
-    # Store to DB
-    _store_rankings(ctx, scored, "profile", ctx.deps.user_profile, profile_hash)
-
-    return _format_summary(scored, f"profile-based rankings for {ctx.deps.date_to_rank}")
+    db = ctx.deps.db
+    rankings = db.query(
+        f"""SELECT r.paper_id, r.ranking, r.reason,
+                   p.title, p.summary, p.authors, p.upvotes
+            FROM {db.rankings_table} r
+            JOIN papers p ON r.paper_id = p.id
+            WHERE r.user_id = %s AND r.paper_date = %s
+              AND r.ranking_criteria_type = 'profile'
+            ORDER BY r.ranking DESC""",
+        (ctx.deps.user_id, ctx.deps.date_to_rank),
+    )
+    if not rankings:
+        return "No rankings found for this date. The user should rank papers first."
+    return _format_retrieved_papers(rankings)
 
 
-@papers_agent.tool
-async def rank_by_request(
-    ctx: RunContext[data_models.PapersRankDeps],
-    request: str = Field(description="What the user is specifically looking for"),
-) -> str:
-    """Rank papers by relevance to a specific request/topic.
-
-    Use when user asks for papers about a specific topic or question.
-    """
-    send_internal("tool", f"Ranking papers by request: {request[:50]}...")
-
-    # Check for similar existing request
-    similar_criteria = _find_similar_request(ctx, request)
-    if similar_criteria:
-        cached = _get_cached_rankings(ctx, "request", criteria_text=similar_criteria)
-        if cached:
-            print(f"Found similar cached request: {similar_criteria[:50]}...")
-            return _format_summary(cached, f"request-based rankings for '{request[:30]}...'")
-
-    # Compute new rankings
-    papers = _get_papers(ctx)
-    if not papers:
-        return f"No papers found for {ctx.deps.date_to_rank}."
-
-    print(f"Ranking {len(papers)} papers by request: {request[:50]}...")
-    scored = await _score_papers(papers, f"User is looking for:\n{request}")
-
-    # Store to DB (no hash for request-based)
-    _store_rankings(ctx, scored, "request", request, None)
-
-    return _format_summary(scored, f"request-based rankings for '{request[:30]}...'")
+def _format_retrieved_papers(rankings: list[dict]) -> str:
+    """Format retrieved rankings with abstracts for LLM analysis."""
+    lines = [f"Retrieved {len(rankings)} ranked papers:"]
+    lines.append("")
+    for r in rankings:
+        lines.append(f"- **{r['title']}** (ID: {r['paper_id']})")
+        lines.append(f"  Score: {r['ranking']}/5 | Reason: {r['reason']}")
+        authors = r.get("authors") or []
+        author_names = [a["name"] if isinstance(a, dict) else a for a in authors]
+        lines.append(f"  Authors: {', '.join(author_names) if author_names else 'N/A'}")
+        lines.append(f"  Upvotes: {r['upvotes']}")
+        if r["summary"]:
+            lines.append(f"  Abstract: {r['summary']}")
+        lines.append("")
+    return "\n".join(lines)

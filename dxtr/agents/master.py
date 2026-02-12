@@ -4,6 +4,7 @@ from pydantic import Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai_litellm import LiteLLMModel
 
+
 from dxtr import constants, data_models, load_system_prompt
 from dxtr.agents.subagents.papers_ranking.agent import papers_agent
 from dxtr.bus import send_internal
@@ -43,6 +44,8 @@ async def store_user_fact(
 
     Do NOT store transient conversation details or trivial observations.
     Do NOT store redundant facts.
+    Only store facts when the user explicitly shares something about themselves.
+    Do NOT store facts derived from their ranking requests.
     """
     send_internal("tool", "Storing user fact...")
     db = ctx.deps.db
@@ -54,20 +57,26 @@ async def store_user_fact(
 
 
 @agent.tool
-async def invoke_papers_rank_agent(
+async def invoke_papers_agent(
     ctx: RunContext[data_models.AgentDeps],
-    date_to_rank: str = Field(description="Date of papers to rank (YYYY-MM-DD format)"),
-    query: str = Field(description="The user's original request about papers"),
+    date: str = Field(
+        description="Date of papers (YYYY-MM-DD format). Use the date reference table in context to resolve relative dates like 'today', 'yesterday', etc."
+    ),
+    query: str = Field(
+        description="What to do — e.g. 'Rank papers' or 'Compare paper X and paper Y'"
+    ),
 ) -> str:
-    """Delegate paper ranking to the papers agent.
+    """Rank or compare papers for a given date. This is a "by request" tool.
 
-    Use this when the user asks for paper recommendations or rankings.
-    The papers agent will decide the best ranking method.
+    Call this when the user asks to rank, recommend, or compare papers they haven't seen yet.
+    Do NOT call this for follow-up questions about papers already discussed in the conversation
+    (e.g. "tell me more", "which was highest?", "why was X ranked low?") — answer those from context.
+    Do NOT call this just because the user mentions a topic — store that as a fact instead.
     """
-    send_internal("tool", f"Ranking papers for {date_to_rank}...")
+    send_internal("tool", f"Papers agent: {query[:50]}...")
     deps = data_models.PapersRankDeps(
         user_id=ctx.deps.request.user_id,
-        date_to_rank=date_to_rank,
+        date_to_rank=date,
         user_profile=ctx.deps.context.user_profile_facts,
         papers_by_date=ctx.deps.context.papers_by_date,
         db=ctx.deps.db,

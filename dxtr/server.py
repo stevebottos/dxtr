@@ -96,7 +96,13 @@ def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddCon
     date_lines = ["Date reference:"]
     for days_ago in range(8):
         d = today - timedelta(days=days_ago)
-        label = "today" if days_ago == 0 else "yesterday" if days_ago == 1 else f"{days_ago} days ago"
+        label = (
+            "today"
+            if days_ago == 0
+            else "yesterday"
+            if days_ago == 1
+            else f"{days_ago} days ago"
+        )
         date_lines.append(f"  {d.strftime('%A')}: {d.isoformat()} ({label})")
     today_str = "\n".join(date_lines)
 
@@ -108,10 +114,11 @@ def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddCon
 
 async def handle_query(
     request: data_models.MasterRequest,
-    add_context: data_models.AddContext,
     db: PostgresHelper,
 ):
     """Process a query through the main agent with Redis-backed conversation history."""
+
+    add_context = get_user_add_context(request.user_id, DB)
 
     session_key = (request.user_id, request.session_id)
     store = get_conversation_store()
@@ -129,7 +136,6 @@ async def chat_stream(
     request: data_models.MasterRequest, _token: dict = Depends(verify_token)
 ):
     """SSE streaming endpoint - sends events as the agent works."""
-    add_context = get_user_add_context(request.user_id, DB)
 
     async def event_generator():
         internal_queue = setup_bus()
@@ -138,7 +144,7 @@ async def chat_stream(
         yield f"event: status\ndata: {json.dumps({'type': 'status', 'message': 'Working on it...'})}\n\n"
         last_send = time.time()
 
-        agent_task = asyncio.create_task(handle_query(request, add_context, DB))
+        agent_task = asyncio.create_task(handle_query(request, DB))
 
         try:
             while not agent_task.done():
@@ -259,15 +265,17 @@ async def get_rankings(user_id: str, _token: dict = Depends(verify_token)):
                 "papers": [],
             }
 
-        grouped[date_key][criteria_key]["papers"].append({
-            "paper_id": r["paper_id"],
-            "title": r["title"],
-            "summary": r["summary"],
-            "authors": r["authors"],
-            "upvotes": r["upvotes"],
-            "ranking": r["ranking"],
-            "reason": r["reason"],
-        })
+        grouped[date_key][criteria_key]["papers"].append(
+            {
+                "paper_id": r["paper_id"],
+                "title": r["title"],
+                "summary": r["summary"],
+                "authors": r["authors"],
+                "upvotes": r["upvotes"],
+                "ranking": r["ranking"],
+                "reason": r["reason"],
+            }
+        )
 
     return {"rankings": grouped}
 

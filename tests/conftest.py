@@ -22,25 +22,9 @@ def reset_redis_between_tests():
     yield
     dxtr.db._redis = None
 
+
 # Shared dev database helper for all tests
 DEV_DB = PostgresHelper(is_dev=True)
-
-
-# === DeepEval Result Saving ===
-
-
-def pytest_sessionstart(session):
-    """Enable deepeval to save test results to .deepeval folder."""
-    import os
-    os.environ["DEEPEVAL"] = "1"
-
-    from deepeval.test_run import global_test_run_manager
-
-    global_test_run_manager.save_to_disk = True
-    global_test_run_manager.create_test_run(
-        identifier=f"test_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        file_name="tests",
-    )
 
 
 # Test user ID for the session
@@ -85,8 +69,12 @@ def db(test_user_id):
     This allows inspection of test artifacts after the test run.
     """
     # Clean up before test only
-    DEV_DB.execute(f"DELETE FROM {DEV_DB.facts_table} WHERE user_id = %s", (test_user_id,))
-    DEV_DB.execute(f"DELETE FROM {DEV_DB.rankings_table} WHERE user_id = %s", (test_user_id,))
+    DEV_DB.execute(
+        f"DELETE FROM {DEV_DB.facts_table} WHERE user_id = %s", (test_user_id,)
+    )
+    DEV_DB.execute(
+        f"DELETE FROM {DEV_DB.rankings_table} WHERE user_id = %s", (test_user_id,)
+    )
 
     yield DEV_DB
 
