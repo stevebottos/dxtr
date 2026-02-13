@@ -1,8 +1,8 @@
 """Request/response models for agent interfaces."""
 
-from pydantic import BaseModel
+from typing import Any
 
-from dxtr.db import PostgresHelper
+from pydantic import BaseModel, ConfigDict
 
 
 class MasterRequest(BaseModel):
@@ -24,16 +24,20 @@ class AddContext(BaseModel):
 class AgentDeps(BaseModel):
     """Dependencies passed to the master agent and its tools."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     request: MasterRequest
     context: AddContext
-    db: PostgresHelper
+    db: Any
 
 
 class PapersRankDeps(BaseModel):
     """Dependencies for the papers ranking agent."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     user_id: str
     date_to_rank: str
     user_profile: str
-    db: PostgresHelper
+    db: Any
     papers_by_date: dict[str, list[dict]] | None = None  # For testing

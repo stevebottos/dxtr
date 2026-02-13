@@ -69,11 +69,11 @@ async def invoke_papers_agent(
     """Rank or compare papers for a given date. This is a "by request" tool.
 
     Call this when the user asks to rank, recommend, or compare papers they haven't seen yet.
-    Do NOT call this for follow-up questions about papers already discussed in the conversation
-    (e.g. "tell me more", "which was highest?", "why was X ranked low?") — answer those from context.
+    Also call this when the user asks about a specific paper that is NOT in your conversation context — use it to retrieve details rather than guessing.
+    Do NOT call this for follow-up questions about papers already visible in context (e.g. "tell me more about the top one", "which was highest?").
     Do NOT call this just because the user mentions a topic — store that as a fact instead.
     """
-    send_internal("tool", f"Papers agent: {query[:50]}...")
+    send_internal("tool", f"Papers agent: {query}")
     deps = data_models.PapersRankDeps(
         user_id=ctx.deps.request.user_id,
         date_to_rank=date,

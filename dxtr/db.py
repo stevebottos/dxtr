@@ -181,8 +181,3 @@ def get_conversation_store() -> RedisConversationStore:
     if _store is None:
         _store = RedisConversationStore()
     return _store
-
-
-async def flush_redis():
-    """Flush the entire Redis database. Use for testing only."""
-    await _get_redis().flushdb()

@@ -1,3 +1,7 @@
+scripts/
+CLAUDE.md
+scratch.py 
+
 # Python-generated files
 tests/artifacts
 dxtr/sessions

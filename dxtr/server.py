@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dxtr import constants, data_models
 from dxtr.agents.master import agent as main_agent
 from dxtr.bus import setup_bus, teardown_bus
-from dxtr.db import PostgresHelper, close_pool, get_conversation_store, flush_redis
+from dxtr.db import PostgresHelper, RedisConversationStore, close_pool, get_conversation_store
 
 security = HTTPBearer(auto_error=False)
 
@@ -68,11 +68,6 @@ api.add_middleware(
 )
 
 
-# For tests
-async def dev_nuke_redis():
-    """Wipes the entire Redis database. Only use during testing."""
-    await flush_redis()
-
 
 def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddContext:
     """Build AddContext for a user."""
@@ -115,13 +110,14 @@ def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddCon
 async def handle_query(
     request: data_models.MasterRequest,
     db: PostgresHelper,
+    store: RedisConversationStore | None = None,
 ):
     """Process a query through the main agent with Redis-backed conversation history."""
 
-    add_context = get_user_add_context(request.user_id, DB)
+    add_context = get_user_add_context(request.user_id, db)
 
     session_key = (request.user_id, request.session_id)
-    store = get_conversation_store()
+    store = store or get_conversation_store()
 
     history = await store.get_history(session_key)
     deps = data_models.AgentDeps(request=request, context=add_context, db=db)
