@@ -88,7 +88,11 @@ def _get_papers(ctx: RunContext[data_models.PapersRankDeps]) -> list[dict]:
 
 
 def _format_summary(papers: list[ScoredPaper], description: str) -> str:
-    """Format summary + top 5 abstracts for master agent."""
+    """Format a lean summary of top 5 papers for master agent.
+
+    No abstracts — the master only needs titles/scores/reasons to present results.
+    Full details are fetched on demand via get_paper_index + get_paper_details.
+    """
     total = len(papers)
     top_5 = papers[:5]
 
@@ -98,8 +102,6 @@ def _format_summary(papers: list[ScoredPaper], description: str) -> str:
     for i, p in enumerate(top_5, 1):
         lines.append(f"{i}. [{p['score']}/5] {p['title']}")
         lines.append(f"   Reason: {p['reason']}")
-        if p["summary"]:
-            lines.append(f"   Abstract: {p['summary']}")
         lines.append("")
 
     return "\n".join(lines)

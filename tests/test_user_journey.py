@@ -93,6 +93,48 @@ class JudgeOutput(Evaluator):
 
 
 @dataclass
+class GroundedResponseEvaluator(Evaluator):
+    """Judge the agent's response against ground-truth paper data from the mock DB."""
+
+    query_type: str
+    db: InMemoryDB
+    judge: Agent
+
+    async def evaluate(self, ctx: EvaluatorContext) -> bool:
+        papers = _resolve_papers_for_query(self.query_type, self.db)
+
+        # Build ground truth reference block
+        reference_lines = []
+        for p in papers:
+            raw_authors = p.get("authors", [])
+            if raw_authors and isinstance(raw_authors[0], dict):
+                authors = ", ".join(a.get("name", str(a)) for a in raw_authors)
+            else:
+                authors = ", ".join(str(a) for a in raw_authors)
+            reference_lines.append(
+                f"- Title: {p['title']}\n"
+                f"  Abstract: {p['summary']}\n"
+                f"  Authors: {authors}\n"
+                f"  Score: {p['ranking']}/5\n"
+                f"  Reason: {p['reason']}"
+            )
+        reference = "\n".join(reference_lines)
+
+        prompt = (
+            f"## Reference Data (ground truth)\n{reference}\n\n"
+            f"## Agent Response\n{ctx.output.output}\n\n"
+            f"## Task\nDoes the agent's response accurately reflect the reference data above? "
+            f"Flag any fabricated details — invented authors, wrong scores, made-up abstract content, "
+            f"or claims not supported by the reference. Minor rephrasing is fine. "
+            f"Return True if grounded, False if it contains hallucinated details."
+        )
+
+        res = await self.judge.run(prompt)
+        print(f"  [GroundedResponseEvaluator:{self.query_type}] {res.output.reasoning}")
+        return res.output.passed
+
+
+@dataclass
 class MaxPapersInHistory(Evaluator):
     """Check that the conversation history doesn't contain more than `max_titles` paper titles."""
 
@@ -123,28 +165,56 @@ class MaxPapersInHistory(Evaluator):
 HALLUCINATION_SENTINEL = "__HALLUCINATION__"
 
 
-async def _build_followup_query(query_type: str) -> str:
-    """Build a follow-up question from stored rankings data."""
-    assert MOCK_DB._rankings, "No rankings stored — rank case must run first"
-    by_score = sorted(MOCK_DB._rankings, key=lambda r: r["ranking"])
-    papers_idx = MOCK_DB._build_papers_index()
+def _resolve_papers_for_query(query_type: str, db: InMemoryDB) -> list[dict]:
+    """Resolve which paper(s) a query type targets, returning full paper data with ranking info."""
+    assert db._rankings, "No rankings stored — rank case must run first"
+    by_score = sorted(db._rankings, key=lambda r: r["ranking"])
+    papers_idx = db._build_papers_index()
+
+    def _enrich(ranking_row: dict) -> dict:
+        p = papers_idx[ranking_row["paper_id"]]
+        return {
+            "paper_id": ranking_row["paper_id"],
+            "title": p["title"],
+            "summary": p.get("summary", ""),
+            "authors": p.get("authors", []),
+            "ranking": ranking_row["ranking"],
+            "reason": ranking_row["reason"],
+        }
 
     if query_type == "low_rank":
-        worst = by_score[0]
-        title = papers_idx[worst["paper_id"]]["title"]
-        return f"Why did '{title}' rank so low?"
+        return [_enrich(by_score[0])]
 
     if query_type == "compare":
-        worst = by_score[0]
-        best = by_score[-1]
-        t1 = papers_idx[worst["paper_id"]]["title"]
-        t2 = papers_idx[best["paper_id"]]["title"]
-        return f"Compare '{t1}' and '{t2}'"
+        return [_enrich(by_score[0]), _enrich(by_score[-1])]
 
     if query_type == "details":
         mid = by_score[len(by_score) // 2]
-        title = papers_idx[mid["paper_id"]]["title"]
-        return f"Tell me more about '{title}'"
+        return [_enrich(mid)]
+
+    if query_type == "outside_top5":
+        by_score_desc = list(reversed(by_score))
+        assert len(by_score_desc) > 5, "Need >5 ranked papers for outside_top5 test"
+        return [_enrich(by_score_desc[5])]
+
+    raise ValueError(f"Unknown query type: {query_type}")
+
+
+async def _build_followup_query(query_type: str) -> str:
+    """Build a follow-up question from stored rankings data."""
+    papers = _resolve_papers_for_query(query_type, MOCK_DB)
+
+    if query_type == "low_rank":
+        return f"Why did '{papers[0]['title']}' rank so low?"
+
+    if query_type == "compare":
+        return f"Compare '{papers[0]['title']}' and '{papers[1]['title']}'"
+
+    if query_type == "details":
+        return f"Tell me more about '{papers[0]['title']}'"
+
+    if query_type == "outside_top5":
+        return f"Tell me about '{papers[0]['title']}'"
 
     raise ValueError(f"Unknown query type: {query_type}")
 
@@ -208,16 +278,7 @@ JOURNEY_CASES = [
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
-            JudgeOutput(
-                judge=JUDGE,
-                criteria="""The user asked a follow-up question about a specific paper's ranking.
-                The agent should answer based on actual ranking data — not make up scores, reasons, or details.
-                If the agent says it doesn't know or needs to check, that's acceptable.
-                If the agent provides specific scores or reasons, they should sound grounded (not vague or generic).
-                Return True if the response seems grounded, False if it appears to hallucinate details.
-
-                Agent response: {agent_output}""",
-            ),
+            GroundedResponseEvaluator(query_type="low_rank", db=MOCK_DB, judge=JUDGE),
         ],
     ),
     Case(
@@ -227,15 +288,7 @@ JOURNEY_CASES = [
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
-            JudgeOutput(
-                judge=JUDGE,
-                criteria="""The user asked to compare two papers.
-                The agent should reference actual differences between the papers — not make up details.
-                If the agent provides scores, topics, or reasons, they should sound grounded and specific.
-                Return True if the response seems grounded, False if it appears to hallucinate details.
-
-                Agent response: {agent_output}""",
-            ),
+            GroundedResponseEvaluator(query_type="compare", db=MOCK_DB, judge=JUDGE),
         ],
     ),
     Case(
@@ -245,15 +298,17 @@ JOURNEY_CASES = [
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
-            JudgeOutput(
-                judge=JUDGE,
-                criteria="""The user asked for more details about a specific paper.
-                The agent should provide information grounded in the paper's actual abstract and ranking data.
-                If the agent provides details about the paper's content, they should match what a real abstract would contain.
-                Return True if the response seems grounded, False if it appears to hallucinate details.
-
-                Agent response: {agent_output}""",
-            ),
+            GroundedResponseEvaluator(query_type="details", db=MOCK_DB, judge=JUDGE),
+        ],
+    ),
+    Case(
+        name="hallucination_outside_top5",
+        inputs=f"{HALLUCINATION_SENTINEL}:outside_top5",
+        evaluators=[
+            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="get_paper_index"),
+            ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
+            GroundedResponseEvaluator(query_type="outside_top5", db=MOCK_DB, judge=JUDGE),
         ],
     ),
 ]

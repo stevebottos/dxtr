@@ -68,7 +68,6 @@ api.add_middleware(
 )
 
 
-
 def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddContext:
     """Build AddContext for a user."""
     facts = db.query(

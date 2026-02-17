@@ -2,7 +2,7 @@
 
 import os
 from contextlib import contextmanager
-from typing import Any, List, Tuple
+from typing import Any
 
 from pydantic import BaseModel
 from psycopg2.extras import RealDictCursor
@@ -114,7 +114,7 @@ def _get_redis() -> Redis:
     return _redis
 
 
-SessionKey = Tuple[str, str]  # (user_id, session_id)
+SessionKey = tuple[str, str]  # (user_id, session_id)
 
 
 def _serialize_message(msg: ModelMessage) -> str:
@@ -141,11 +141,11 @@ class RedisConversationStore:
         user_id, session_id = session_key
         return f"chat:{user_id}:{session_id}"
 
-    async def get_history(self, session_key: SessionKey) -> List[ModelMessage]:
+    async def get_history(self, session_key: SessionKey) -> list[ModelMessage]:
         raw = await self.redis.lrange(self._key(session_key), 0, -1)
         return [_deserialize_message(m) for m in raw]
 
-    async def append(self, session_key: SessionKey, messages: List[ModelMessage]) -> None:
+    async def append(self, session_key: SessionKey, messages: list[ModelMessage]) -> None:
         if not messages:
             return
 
