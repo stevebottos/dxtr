@@ -62,6 +62,31 @@ class ValidateToolBehaviour(Evaluator):
 
 
 @dataclass
+class ValidateMultiPaperRetrieval(Evaluator):
+    """Check that get_paper_details was called with at least min_papers paper IDs."""
+
+    min_papers: int = 2
+    tool_name_key: str = "gen_ai.tool.name"
+    tool_args_key: str = "tool_arguments"
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        tool_calls = ctx.span_tree.find(lambda s: s.name == "running tool")
+
+        for tool_call in tool_calls:
+            if tool_call.attributes.get(self.tool_name_key) == "get_paper_details":
+                raw_args = tool_call.attributes.get(self.tool_args_key, "")
+                import json
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                paper_ids = args.get("paper_ids", [])
+                if len(paper_ids) >= self.min_papers:
+                    return True
+        return False
+
+
+@dataclass
 class ValidateOutputTool(Evaluator):
     """Check that a tool was executed as an output tool (exits the agent run directly)."""
 
@@ -132,6 +157,58 @@ class GroundedResponseEvaluator(Evaluator):
 
         res = await self.judge.run(prompt)
         print(f"  [GroundedResponseEvaluator:{self.query_type}] {res.output.reasoning}")
+        return res.output.passed
+
+
+@dataclass
+class RankingQualityEvaluator(Evaluator):
+    """Judge whether rankings are well-differentiated and aligned with the user profile."""
+
+    db: InMemoryDB
+    judge: Agent
+
+    async def evaluate(self, ctx: EvaluatorContext) -> bool:
+        if not self.db._rankings:
+            print("  [RankingQualityEvaluator] No rankings stored — skipping")
+            return False
+
+        # Gather user profile
+        profile_facts = [f["fact"] for f in self.db._facts]
+        profile_str = "\n".join(f"- {fact}" for fact in profile_facts) if profile_facts else "No profile stored."
+
+        # Gather rankings with paper info
+        papers_idx = self.db._build_papers_index()
+        ranking_lines = []
+        for r in sorted(self.db._rankings, key=lambda x: x["ranking"], reverse=True):
+            p = papers_idx.get(r["paper_id"], {})
+            ranking_lines.append(
+                f"- [{r['ranking']}/5] {p.get('title', r['paper_id'])}\n"
+                f"  Abstract: {p.get('summary', 'N/A')}\n"
+                f"  Reason: {r['reason']}"
+            )
+        rankings_str = "\n".join(ranking_lines)
+
+        # Score distribution summary
+        scores = [r["ranking"] for r in self.db._rankings]
+        distribution = {s: scores.count(s) for s in sorted(set(scores))}
+        dist_str = ", ".join(f"{s}/5: {c} papers" for s, c in distribution.items())
+
+        prompt = (
+            f"## User Profile\n{profile_str}\n\n"
+            f"## Score Distribution\n{dist_str}\n\n"
+            f"## Rankings ({len(self.db._rankings)} papers)\n{rankings_str}\n\n"
+            f"## Task\nEvaluate whether these rankings are reasonable:\n"
+            f"1. **Differentiation**: Are the scores well-spread across the 1-5 range? "
+            f"If most papers got the same score (e.g. all 5/5 or all 3/5), that's a failure — "
+            f"papers on different topics should receive different relevance scores.\n"
+            f"2. **Profile alignment**: Do higher-scored papers genuinely match the user's stated interests better than lower-scored ones?\n"
+            f"3. **Reason quality**: Are the reasons specific to each paper, or are they generic/copy-pasted?\n\n"
+            f"Return True only if the rankings are meaningfully differentiated AND aligned with the profile. "
+            f"Return False if the scores are clustered (poor differentiation) or misaligned with the profile."
+        )
+
+        res = await self.judge.run(prompt)
+        print(f"  [RankingQualityEvaluator] {res.output.reasoning}")
         return res.output.passed
 
 
@@ -270,6 +347,7 @@ JOURNEY_CASES = [
                 session_key=(TEST_USER_ID, TEST_SESSION_ID),
                 max_titles=5,
             ),
+            RankingQualityEvaluator(db=MOCK_DB, judge=JUDGE),
         ],
     ),
     Case(
@@ -288,6 +366,7 @@ JOURNEY_CASES = [
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
+            ValidateMultiPaperRetrieval(min_papers=2),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             GroundedResponseEvaluator(query_type="compare", db=MOCK_DB, judge=JUDGE),
         ],

@@ -11,6 +11,9 @@ environment_variables:
 
 # Model constant - change this to switch all agents
 x-model: &default_model openrouter/nvidia/nemotron-nano-9b-v2
+x-provider: &default_provider
+  provider:
+    order: ["DeepInfra"]
 
 model_list:
   - model_name: master
@@ -21,6 +24,7 @@ model_list:
       max_parallel_requests: 2
       temperature: 0.0
       supports_streaming: true
+      extra_body: *default_provider
 
   - model_name: github_summarizer
     litellm_params:
@@ -30,6 +34,7 @@ model_list:
       max_parallel_requests: 20
       temperature: 0.0
       supports_streaming: true
+      extra_body: *default_provider
 
   - model_name: profile_synthesizer
     litellm_params:
@@ -38,6 +43,7 @@ model_list:
       api_base: "https://openrouter.ai/api/v1"
       max_parallel_requests: 2
       temperature: 0.3
+      extra_body: *default_provider
 
   - model_name: papers_ranker
     litellm_params:
@@ -46,6 +52,7 @@ model_list:
       api_base: "https://openrouter.ai/api/v1"
       max_parallel_requests: 20
       temperature: 0.0
+      extra_body: *default_provider
 
   # Test agents
   - model_name: simulated-user
@@ -57,7 +64,7 @@ model_list:
 
   - model_name: judge
     litellm_params:
-      model: openrouter/google/gemini-2.0-flash-001
+      model: openrouter/google/gemini-2.5-flash
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "https://openrouter.ai/api/v1"
       temperature: 0.0

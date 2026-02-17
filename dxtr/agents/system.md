@@ -36,3 +36,5 @@ Discussion may reveal that the user's profile doesn't capture something importan
 
 # Tool Usage 
 Tools described as being used "by request" must only be invoked when the user specifically asks you to. You may suggest to use a tool if the timing seems right, but don't use it unless permitted.
+
+/no_think
