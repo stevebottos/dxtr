@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, RunContext, ToolOutput
 from pydantic_ai_litellm import LiteLLMModel
 
 from dxtr import constants, data_models, load_system_prompt
@@ -42,20 +42,6 @@ scoring_agent = Agent(
     ),
     system_prompt=load_system_prompt(Path(__file__).parent / "system.md"),
     output_type=PaperScore,
-)
-
-
-# === Papers Ranking Agent ===
-
-papers_agent = Agent(
-    LiteLLMModel(
-        model_name="openai/papers_ranker",
-        api_key=constants.API_KEY,
-        api_base=constants.BASE_URL,
-    ),
-    deps_type=data_models.PapersRankDeps,
-    output_type=str,
-    system_prompt=load_system_prompt(Path(__file__).parent / "papers_agent_system.md"),
 )
 
 
@@ -172,16 +158,11 @@ async def _score_papers(papers: list[dict], scoring_context: str) -> list[Scored
     return sorted(scored, key=lambda x: x["score"], reverse=True)
 
 
-# === Tools ===
+# === Output Tools ===
 
 
-@papers_agent.tool
-async def rank(ctx: RunContext[data_models.PapersRankDeps]) -> str:
-    """Score and rank all papers for a date by relevance to the user's profile.
-
-    Only call this for an initial ranking request (e.g. "Rank papers").
-    Do NOT call this for follow-ups, discussion, or questions about existing rankings — use retrieve instead.
-    """
+async def set_rankings(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Score and rank all papers for a date by relevance to the user's profile."""
     profile = ctx.deps.user_profile
     if not profile or not profile.strip():
         return "No user profile available. Suggest the user chat about their interests first so you can build a profile."
@@ -200,12 +181,28 @@ async def rank(ctx: RunContext[data_models.PapersRankDeps]) -> str:
     return _format_summary(scored, "profile-based ranking")
 
 
-@papers_agent.tool
-async def retrieve(ctx: RunContext[data_models.PapersRankDeps]) -> str:
-    """Retrieve existing rankings from the database for discussion or comparison.
+# === Papers Ranking Agent ===
 
-    Call this for any question about previously ranked papers — comparisons, explanations, details, etc.
+papers_agent = Agent(
+    LiteLLMModel(
+        model_name="openai/papers_ranker",
+        api_key=constants.API_KEY,
+        api_base=constants.BASE_URL,
+    ),
+    deps_type=data_models.PapersRankDeps,
+    output_type=[ToolOutput(set_rankings, name='set_rankings'), str],
+    system_prompt=load_system_prompt(Path(__file__).parent / "papers_agent_system.md"),
+)
+
+
+@papers_agent.tool
+async def get_rankings(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Retrieve all previously ranked papers for a date, including full details.
+
+    Returns the complete list with scores, reasons, abstracts, and authors.
+    Use this to answer any question about already-ranked papers.
     """
+    send_internal("tool", "Retrieving rankings...")
     db = ctx.deps.db
     rankings = db.query(
         f"""SELECT r.paper_id, r.ranking, r.reason,
@@ -218,12 +215,8 @@ async def retrieve(ctx: RunContext[data_models.PapersRankDeps]) -> str:
         (ctx.deps.user_id, ctx.deps.date_to_rank),
     )
     if not rankings:
-        return "No rankings found for this date. The user should rank papers first."
-    return _format_retrieved_papers(rankings)
+        return "No rankings found for this date."
 
-
-def _format_retrieved_papers(rankings: list[dict]) -> str:
-    """Format retrieved rankings with abstracts for LLM analysis."""
     lines = [f"Retrieved {len(rankings)} ranked papers:"]
     lines.append("")
     for r in rankings:

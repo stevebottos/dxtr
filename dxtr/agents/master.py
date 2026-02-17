@@ -62,18 +62,14 @@ async def invoke_papers_agent(
     date: str = Field(
         description="Date of papers (YYYY-MM-DD format). Use the date reference table in context to resolve relative dates like 'today', 'yesterday', etc."
     ),
-    query: str = Field(
-        description="What to do — e.g. 'Rank papers' or 'Compare paper X and paper Y'"
-    ),
 ) -> str:
-    """Rank or compare papers for a given date. This is a "by request" tool.
+    """Rank papers for a given date by relevance to the user's profile.
 
-    Call this when the user asks to rank, recommend, or compare papers they haven't seen yet.
-    Also call this when the user asks about a specific paper that is NOT in your conversation context — use it to retrieve details rather than guessing.
-    Do NOT call this for follow-up questions about papers already visible in context (e.g. "tell me more about the top one", "which was highest?").
+    Call this when the user asks to rank or score papers they haven't ranked yet.
+    Do NOT call this for follow-up questions about already-ranked papers — use discuss_papers instead.
     Do NOT call this just because the user mentions a topic — store that as a fact instead.
     """
-    send_internal("tool", f"Papers agent: {query}")
+    send_internal("tool", "Ranking papers...")
     deps = data_models.PapersRankDeps(
         user_id=ctx.deps.request.user_id,
         date_to_rank=date,
@@ -81,5 +77,34 @@ async def invoke_papers_agent(
         papers_by_date=ctx.deps.context.papers_by_date,
         db=ctx.deps.db,
     )
-    result = await papers_agent.run(query, deps=deps)
+    result = await papers_agent.run("Rank papers", deps=deps)
+    return result.output
+
+
+@agent.tool
+async def discuss_papers(
+    ctx: RunContext[data_models.AgentDeps],
+    question: str = Field(
+        description="The user's question about previously ranked papers"
+    ),
+    date: str = Field(
+        description="Date of the rankings to discuss (YYYY-MM-DD format). Use the date reference table in context to resolve relative dates."
+    ),
+) -> str:
+    """Delegate a follow-up question about already-ranked papers to the papers agent.
+
+    Use this for any question about papers that have already been ranked — scores,
+    comparisons, details, "why did X rank low?", "tell me more about paper Y", etc.
+    Pass the user's actual question through so the papers agent can answer it directly.
+    Do NOT call this just to retrieve data — the papers agent will answer the question.
+    """
+    send_internal("tool", "Looking into papers...")
+    deps = data_models.PapersRankDeps(
+        user_id=ctx.deps.request.user_id,
+        date_to_rank=date,
+        user_profile=ctx.deps.context.user_profile_facts,
+        papers_by_date=ctx.deps.context.papers_by_date,
+        db=ctx.deps.db,
+    )
+    result = await papers_agent.run(question, deps=deps)
     return result.output

@@ -61,6 +61,24 @@ class ValidateToolBehaviour(Evaluator):
 
 
 @dataclass
+class ValidateOutputTool(Evaluator):
+    """Check that a tool was executed as an output tool (exits the agent run directly)."""
+
+    tool_fn_name: str
+    tool_call_wanted: bool = True
+    tool_call_key: str = "gen_ai.tool.name"
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        output_tools = ctx.span_tree.find(
+            lambda s: s.name == "running output function"
+        )
+        for span in output_tools:
+            if span.attributes.get(self.tool_call_key) == self.tool_fn_name:
+                return self.tool_call_wanted
+        return not self.tool_call_wanted
+
+
+@dataclass
 class JudgeOutput(Evaluator):
     criteria: str
     judge: Agent
@@ -102,25 +120,33 @@ class MaxPapersInHistory(Evaluator):
         return len(found) <= self.max_titles
 
 
-HALLUCINATION_SENTINEL = "__HALLUCINATION_CHECK__"
+HALLUCINATION_SENTINEL = "__HALLUCINATION__"
 
 
-async def _pick_absent_paper_query() -> str:
-    """Pick the lowest-scored paper from the rankings — guaranteed outside the top 5 summary."""
+async def _build_followup_query(query_type: str) -> str:
+    """Build a follow-up question from stored rankings data."""
     assert MOCK_DB._rankings, "No rankings stored — rank case must run first"
-
-    # Sort by score ascending, pick the lowest
     by_score = sorted(MOCK_DB._rankings, key=lambda r: r["ranking"])
-    worst = by_score[0]
+    papers_idx = MOCK_DB._build_papers_index()
 
-    # Find the title from the fixture
-    ranked_date = worst["paper_date"]
-    date_papers = MOCK_DB._papers.get(ranked_date, [])
-    for p in date_papers:
-        if p["id"] == worst["paper_id"]:
-            return f"Why did '{p['title']}' rank so low?"
+    if query_type == "low_rank":
+        worst = by_score[0]
+        title = papers_idx[worst["paper_id"]]["title"]
+        return f"Why did '{title}' rank so low?"
 
-    raise RuntimeError(f"Could not find paper {worst['paper_id']} in fixture")
+    if query_type == "compare":
+        worst = by_score[0]
+        best = by_score[-1]
+        t1 = papers_idx[worst["paper_id"]]["title"]
+        t2 = papers_idx[best["paper_id"]]["title"]
+        return f"Compare '{t1}' and '{t2}'"
+
+    if query_type == "details":
+        mid = by_score[len(by_score) // 2]
+        title = papers_idx[mid["paper_id"]]["title"]
+        return f"Tell me more about '{title}'"
+
+    raise ValueError(f"Unknown query type: {query_type}")
 
 
 JOURNEY_CASES = [
@@ -167,7 +193,7 @@ JOURNEY_CASES = [
         inputs="Check what our most recently saved papers are (we don't save papers on weekends), and rank them for me.",
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="invoke_papers_agent"),
-            ValidateToolBehaviour(tool_fn_name="rank"),
+            ValidateOutputTool(tool_fn_name="set_rankings"),
             MaxPapersInHistory(
                 store=MOCK_STORE,
                 session_key=(TEST_USER_ID, TEST_SESSION_ID),
@@ -176,10 +202,58 @@ JOURNEY_CASES = [
         ],
     ),
     Case(
-        name="hallucination_check",
-        inputs=HALLUCINATION_SENTINEL,
+        name="hallucination_low_rank",
+        inputs=f"{HALLUCINATION_SENTINEL}:low_rank",
         evaluators=[
-            ValidateToolBehaviour(tool_fn_name="invoke_papers_agent"),
+            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="get_rankings"),
+            ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
+            JudgeOutput(
+                judge=JUDGE,
+                criteria="""The user asked a follow-up question about a specific paper's ranking.
+                The agent should answer based on actual ranking data — not make up scores, reasons, or details.
+                If the agent says it doesn't know or needs to check, that's acceptable.
+                If the agent provides specific scores or reasons, they should sound grounded (not vague or generic).
+                Return True if the response seems grounded, False if it appears to hallucinate details.
+
+                Agent response: {agent_output}""",
+            ),
+        ],
+    ),
+    Case(
+        name="hallucination_compare",
+        inputs=f"{HALLUCINATION_SENTINEL}:compare",
+        evaluators=[
+            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="get_rankings"),
+            ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
+            JudgeOutput(
+                judge=JUDGE,
+                criteria="""The user asked to compare two papers.
+                The agent should reference actual differences between the papers — not make up details.
+                If the agent provides scores, topics, or reasons, they should sound grounded and specific.
+                Return True if the response seems grounded, False if it appears to hallucinate details.
+
+                Agent response: {agent_output}""",
+            ),
+        ],
+    ),
+    Case(
+        name="hallucination_details",
+        inputs=f"{HALLUCINATION_SENTINEL}:details",
+        evaluators=[
+            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="get_rankings"),
+            ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
+            JudgeOutput(
+                judge=JUDGE,
+                criteria="""The user asked for more details about a specific paper.
+                The agent should provide information grounded in the paper's actual abstract and ranking data.
+                If the agent provides details about the paper's content, they should match what a real abstract would contain.
+                Return True if the response seems grounded, False if it appears to hallucinate details.
+
+                Agent response: {agent_output}""",
+            ),
         ],
     ),
 ]
@@ -197,15 +271,16 @@ async def cleanup_database():
 @pytest.mark.parametrize("case", JOURNEY_CASES, ids=[c.name for c in JOURNEY_CASES])
 async def test_user_journey(case: Case):
     async def run_snapshot(inp):
-        if inp == HALLUCINATION_SENTINEL:
-            inp = await _pick_absent_paper_query()
-            print(f"\n=== HALLUCINATION CHECK INPUT: {inp}")
+        if inp.startswith(HALLUCINATION_SENTINEL):
+            query_type = inp.split(":", 1)[1]
+            inp = await _build_followup_query(query_type)
+            print(f"\n=== HALLUCINATION CHECK ({query_type}): {inp}")
         res = await handle_query(
             MasterRequest(user_id=TEST_USER_ID, session_id=TEST_SESSION_ID, query=inp),
             db=MOCK_DB,
             store=MOCK_STORE,
         )
-        if case.name == "hallucination_check":
+        if case.name.startswith("hallucination_"):
             print(f"=== AGENT OUTPUT: {res.output}\n")
         return res
 
@@ -217,7 +292,6 @@ async def test_user_journey(case: Case):
     for rc in report.cases:
         failed = [name for name, result in rc.assertions.items() if not result.value]
         assert not failed, f"Case '{rc.name}' failed evaluators: {failed}"
-
 
 
 if __name__ == "__main__":

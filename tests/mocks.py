@@ -54,14 +54,49 @@ class InMemoryDB:
 
     # --- public API (same signatures as PostgresHelper) ---
 
+    def _build_papers_index(self) -> dict[str, dict]:
+        """Build a lookup from paper id -> paper dict across all dates."""
+        return {p["id"]: p for papers in self._papers.values() for p in papers}
+
     def query(self, sql: str, params: tuple = ()) -> list[dict]:
         table = self._table_for_sql(sql)
         if table == "facts":
             user_id = params[0]
             return [f for f in self._facts if f["user_id"] == user_id]
         if table == "papers":
+            if "WHERE id" in sql:
+                # Single paper lookup by id: params = (paper_id,)
+                paper_id = params[0]
+                papers_idx = self._build_papers_index()
+                paper = papers_idx.get(paper_id)
+                return [paper] if paper else []
+            # Papers by date: params = (date,)
             date_key = str(params[0])
             return self._papers.get(date_key, [])
+        if table == "rankings":
+            # JOIN rankings with papers: params = (user_id, paper_date)
+            user_id, paper_date = params[0], str(params[1])
+            papers_idx = self._build_papers_index()
+            results = []
+            for r in self._rankings:
+                if (
+                    r["user_id"] == user_id
+                    and str(r["paper_date"]) == paper_date
+                    and r["ranking_criteria_type"] == "profile"
+                    and r["paper_id"] in papers_idx
+                ):
+                    p = papers_idx[r["paper_id"]]
+                    results.append({
+                        "paper_id": r["paper_id"],
+                        "ranking": r["ranking"],
+                        "reason": r["reason"],
+                        "title": p["title"],
+                        "summary": p["summary"],
+                        "authors": p["authors"],
+                        "upvotes": p["upvotes"],
+                    })
+            results.sort(key=lambda x: x["ranking"], reverse=True)
+            return results
         raise ValueError(f"InMemoryDB.query: unsupported SQL: {sql}")
 
     def execute(self, sql: str, params: tuple = ()) -> int:
