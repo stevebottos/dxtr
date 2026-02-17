@@ -38,7 +38,7 @@ class PapersRankDeps(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     user_id: str
-    date_to_rank: str
+    today_date: str
     user_profile: str
     db: Any
     ranked_dates: list[str] = []

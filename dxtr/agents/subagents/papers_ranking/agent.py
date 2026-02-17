@@ -52,6 +52,7 @@ def _store_rankings(
     ctx: RunContext[data_models.PapersRankDeps],
     scored_papers: list[ScoredPaper],
     criteria: str,
+    date: str,
 ) -> None:
     """Store scored papers to the rankings table."""
     db = ctx.deps.db
@@ -67,7 +68,7 @@ def _store_rankings(
             (
                 ctx.deps.user_id,
                 paper["id"],
-                ctx.deps.date_to_rank,
+                date,
                 "profile",
                 criteria,
                 paper["score"],
@@ -76,14 +77,14 @@ def _store_rankings(
         )
 
 
-def _get_papers(ctx: RunContext[data_models.PapersRankDeps]) -> list[dict]:
+def _get_papers(ctx: RunContext[data_models.PapersRankDeps], date: str) -> list[dict]:
     """Get all papers for a date from fixtures or DB."""
     if ctx.deps.papers_by_date is not None:
-        return ctx.deps.papers_by_date.get(ctx.deps.date_to_rank, [])
+        return ctx.deps.papers_by_date.get(date, [])
 
     return ctx.deps.db.query(
         "SELECT id, title, summary, authors, published_at, upvotes, date FROM papers WHERE date = %s ORDER BY upvotes DESC",
-        (ctx.deps.date_to_rank,),
+        (date,),
     )
 
 
@@ -163,7 +164,10 @@ async def _score_papers(papers: list[dict], scoring_context: str) -> list[Scored
 # === Output Tools ===
 
 
-async def set_rankings(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+async def set_rankings(
+    ctx: RunContext[data_models.PapersRankDeps],
+    date: str = Field(description="Date of papers to rank (YYYY-MM-DD format)"),
+) -> str:
     """Score and rank all papers for a date by relevance to the user's profile."""
     profile = ctx.deps.user_profile
     if not profile or not profile.strip():
@@ -171,14 +175,14 @@ async def set_rankings(ctx: RunContext[data_models.PapersRankDeps]) -> str:
 
     send_internal("tool", "Ranking papers by profile...")
 
-    papers = _get_papers(ctx)
+    papers = _get_papers(ctx, date)
     if not papers:
-        return f"No papers found for {ctx.deps.date_to_rank}."
+        return f"No papers found for {date}."
 
     print(f"Ranking {len(papers)} papers by user profile...")
     scored = await _score_papers(papers, f"User Profile:\n{profile}")
 
-    _store_rankings(ctx, scored, profile)
+    _store_rankings(ctx, scored, profile, date)
 
     return _format_summary(scored, "profile-based ranking")
 
@@ -198,15 +202,25 @@ papers_agent = Agent(
 
 
 @papers_agent.system_prompt
-async def add_ranked_dates(ctx: RunContext[data_models.PapersRankDeps]) -> str:
-    """Tell the papers agent which dates already have rankings."""
-    if ctx.deps.ranked_dates and ctx.deps.date_to_rank in ctx.deps.ranked_dates:
-        return f"Date {ctx.deps.date_to_rank} already has rankings. Use `get_paper_index` then `get_paper_details` to answer questions — do NOT call `set_rankings`."
-    return ""
+async def add_context(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Inject date reference table and ranked dates into the papers agent context."""
+    lines = [ctx.deps.today_date]
+
+    if ctx.deps.ranked_dates:
+        ranked = ", ".join(ctx.deps.ranked_dates)
+        lines.append(f"\nDates with existing rankings: {ranked}")
+        lines.append("For these dates, use `get_paper_index` + `get_paper_details` to answer questions — do NOT call `set_rankings`.")
+    else:
+        lines.append("\nNo dates have been ranked yet.")
+
+    return "\n".join(lines)
 
 
 @papers_agent.tool
-async def get_paper_index(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+async def get_paper_index(
+    ctx: RunContext[data_models.PapersRankDeps],
+    date: str = Field(description="Date of rankings to look up (YYYY-MM-DD format)"),
+) -> str:
     """Get a lightweight index of all ranked papers for a date.
 
     Returns paper ID, title, score, and reason — no abstracts or authors.
@@ -222,7 +236,7 @@ async def get_paper_index(ctx: RunContext[data_models.PapersRankDeps]) -> str:
             WHERE r.user_id = %s AND r.paper_date = %s
               AND r.ranking_criteria_type = 'profile'
             ORDER BY r.ranking DESC""",
-        (ctx.deps.user_id, ctx.deps.date_to_rank),
+        (ctx.deps.user_id, date),
     )
     if not rankings:
         return "No rankings found for this date."
@@ -235,7 +249,9 @@ async def get_paper_index(ctx: RunContext[data_models.PapersRankDeps]) -> str:
 
 @papers_agent.tool
 async def get_paper_details(
-    ctx: RunContext[data_models.PapersRankDeps], paper_ids: list[str]
+    ctx: RunContext[data_models.PapersRankDeps],
+    paper_ids: list[str],
+    date: str = Field(description="Date of rankings to look up (YYYY-MM-DD format)"),
 ) -> str:
     """Get full details for specific papers by their IDs.
 
@@ -255,7 +271,7 @@ async def get_paper_details(
                 FROM {db.rankings_table} r
                 WHERE r.user_id = %s AND r.paper_id = %s AND r.paper_date = %s
                   AND r.ranking_criteria_type = 'profile'""",
-            (ctx.deps.user_id, paper_id, ctx.deps.date_to_rank),
+            (ctx.deps.user_id, paper_id, date),
         )
         if not paper_rows:
             results.append(f"Paper {paper_id}: not found")

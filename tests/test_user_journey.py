@@ -305,7 +305,7 @@ JOURNEY_CASES = [
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="store_user_fact"),
             ValidateToolBehaviour(
-                tool_fn_name="invoke_papers_agent", tool_call_wanted=False
+                tool_fn_name="ask_papers_agent", tool_call_wanted=False
             ),
         ],
     ),
@@ -315,7 +315,7 @@ JOURNEY_CASES = [
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="store_user_fact"),
             ValidateToolBehaviour(
-                tool_fn_name="invoke_papers_agent", tool_call_wanted=False
+                tool_fn_name="ask_papers_agent", tool_call_wanted=False
             ),
         ],
     ),
@@ -340,7 +340,7 @@ JOURNEY_CASES = [
         name="rank_papers",
         inputs=f"Rank papers for {LATEST_PAPER_DATE}",
         evaluators=[
-            ValidateToolBehaviour(tool_fn_name="invoke_papers_agent"),
+            ValidateToolBehaviour(tool_fn_name="ask_papers_agent"),
             ValidateOutputTool(tool_fn_name="set_rankings"),
             MaxPapersInHistory(
                 store=MOCK_STORE,
@@ -354,7 +354,7 @@ JOURNEY_CASES = [
         name="hallucination_low_rank",
         inputs=f"{HALLUCINATION_SENTINEL}:low_rank",
         evaluators=[
-            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="ask_papers_agent"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             GroundedResponseEvaluator(query_type="low_rank", db=MOCK_DB, judge=JUDGE),
@@ -364,7 +364,7 @@ JOURNEY_CASES = [
         name="hallucination_compare",
         inputs=f"{HALLUCINATION_SENTINEL}:compare",
         evaluators=[
-            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="ask_papers_agent"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateMultiPaperRetrieval(min_papers=2),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
@@ -375,7 +375,7 @@ JOURNEY_CASES = [
         name="hallucination_details",
         inputs=f"{HALLUCINATION_SENTINEL}:details",
         evaluators=[
-            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="ask_papers_agent"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             GroundedResponseEvaluator(query_type="details", db=MOCK_DB, judge=JUDGE),
@@ -385,7 +385,7 @@ JOURNEY_CASES = [
         name="hallucination_outside_top5",
         inputs=f"{HALLUCINATION_SENTINEL}:outside_top5",
         evaluators=[
-            ValidateToolBehaviour(tool_fn_name="discuss_papers"),
+            ValidateToolBehaviour(tool_fn_name="ask_papers_agent"),
             ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             GroundedResponseEvaluator(query_type="outside_top5", db=MOCK_DB, judge=JUDGE),
