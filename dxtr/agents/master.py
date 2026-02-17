@@ -27,7 +27,12 @@ agent = Agent(
 async def add_user_context(ctx: RunContext[data_models.AgentDeps]):
     """Inject user profile facts and today's date from pre-fetched context."""
     context = ctx.deps.context
-    return f"Today's date: {context.today_date}\n\n{context.user_profile_facts}"
+    if context.ranked_dates:
+        ranked = ", ".join(context.ranked_dates)
+        ranked_info = f"\n\nDates with existing rankings: {ranked}\nFor these dates, use `discuss_papers` for follow-up questions — do NOT re-rank."
+    else:
+        ranked_info = ""
+    return f"Today's date: {context.today_date}\n\n{context.user_profile_facts}{ranked_info}"
 
 
 @agent.tool
@@ -74,6 +79,7 @@ async def invoke_papers_agent(
         user_id=ctx.deps.request.user_id,
         date_to_rank=date,
         user_profile=ctx.deps.context.user_profile_facts,
+        ranked_dates=ctx.deps.context.ranked_dates,
         papers_by_date=ctx.deps.context.papers_by_date,
         db=ctx.deps.db,
     )
@@ -103,6 +109,7 @@ async def discuss_papers(
         user_id=ctx.deps.request.user_id,
         date_to_rank=date,
         user_profile=ctx.deps.context.user_profile_facts,
+        ranked_dates=ctx.deps.context.ranked_dates,
         papers_by_date=ctx.deps.context.papers_by_date,
         db=ctx.deps.db,
     )

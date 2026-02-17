@@ -195,18 +195,26 @@ papers_agent = Agent(
 )
 
 
-@papers_agent.tool
-async def get_rankings(ctx: RunContext[data_models.PapersRankDeps]) -> str:
-    """Retrieve all previously ranked papers for a date, including full details.
+@papers_agent.system_prompt
+async def add_ranked_dates(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Tell the papers agent which dates already have rankings."""
+    if ctx.deps.ranked_dates and ctx.deps.date_to_rank in ctx.deps.ranked_dates:
+        return f"Date {ctx.deps.date_to_rank} already has rankings. Use `get_paper_index` then `get_paper_details` to answer questions — do NOT call `set_rankings`."
+    return ""
 
-    Returns the complete list with scores, reasons, abstracts, and authors.
-    Use this to answer any question about already-ranked papers.
+
+@papers_agent.tool
+async def get_paper_index(ctx: RunContext[data_models.PapersRankDeps]) -> str:
+    """Get a lightweight index of all ranked papers for a date.
+
+    Returns paper ID, title, score, and reason — no abstracts or authors.
+    Use this first to identify which papers the user is asking about,
+    then call get_paper_details with the specific paper IDs you need.
     """
-    send_internal("tool", "Retrieving rankings...")
+    send_internal("tool", "Retrieving paper index...")
     db = ctx.deps.db
     rankings = db.query(
-        f"""SELECT r.paper_id, r.ranking, r.reason,
-                   p.title, p.summary, p.authors, p.upvotes
+        f"""SELECT r.paper_id, r.ranking, r.reason, p.title
             FROM {db.rankings_table} r
             JOIN papers p ON r.paper_id = p.id
             WHERE r.user_id = %s AND r.paper_date = %s
@@ -217,16 +225,49 @@ async def get_rankings(ctx: RunContext[data_models.PapersRankDeps]) -> str:
     if not rankings:
         return "No rankings found for this date."
 
-    lines = [f"Retrieved {len(rankings)} ranked papers:"]
-    lines.append("")
+    lines = [f"{len(rankings)} ranked papers:"]
     for r in rankings:
-        lines.append(f"- **{r['title']}** (ID: {r['paper_id']})")
-        lines.append(f"  Score: {r['ranking']}/5 | Reason: {r['reason']}")
-        authors = r.get("authors") or []
-        author_names = [a["name"] if isinstance(a, dict) else a for a in authors]
-        lines.append(f"  Authors: {', '.join(author_names) if author_names else 'N/A'}")
-        lines.append(f"  Upvotes: {r['upvotes']}")
-        if r["summary"]:
-            lines.append(f"  Abstract: {r['summary']}")
-        lines.append("")
+        lines.append(f"- [{r['ranking']}/5] {r['title']} (ID: {r['paper_id']}) — {r['reason']}")
     return "\n".join(lines)
+
+
+@papers_agent.tool
+async def get_paper_details(
+    ctx: RunContext[data_models.PapersRankDeps], paper_ids: list[str]
+) -> str:
+    """Get full details for specific papers by their IDs.
+
+    Returns abstract, authors, upvotes, score, and reason for each paper.
+    Only call this after using get_paper_index to identify the relevant paper IDs.
+    """
+    send_internal("tool", "Retrieving paper details...")
+    db = ctx.deps.db
+    results = []
+    for paper_id in paper_ids:
+        paper_rows = db.query(
+            "SELECT id, title, summary, authors, upvotes FROM papers WHERE id = %s",
+            (paper_id,),
+        )
+        ranking_rows = db.query(
+            f"""SELECT r.ranking, r.reason
+                FROM {db.rankings_table} r
+                WHERE r.user_id = %s AND r.paper_id = %s AND r.paper_date = %s
+                  AND r.ranking_criteria_type = 'profile'""",
+            (ctx.deps.user_id, paper_id, ctx.deps.date_to_rank),
+        )
+        if not paper_rows:
+            results.append(f"Paper {paper_id}: not found")
+            continue
+        p = paper_rows[0]
+        r = ranking_rows[0] if ranking_rows else {}
+        authors = p.get("authors") or []
+        author_names = [a["name"] if isinstance(a, dict) else a for a in authors]
+        lines = [
+            f"**{p['title']}** (ID: {p['id']})",
+            f"  Score: {r.get('ranking', 'N/A')}/5 | Reason: {r.get('reason', 'N/A')}",
+            f"  Authors: {', '.join(author_names) if author_names else 'N/A'}",
+            f"  Upvotes: {p.get('upvotes', 0)}",
+            f"  Abstract: {p.get('summary', 'N/A')}",
+        ]
+        results.append("\n".join(lines))
+    return "\n\n".join(results)

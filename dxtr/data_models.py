@@ -18,6 +18,7 @@ class AddContext(BaseModel):
 
     user_profile_facts: str
     today_date: str
+    ranked_dates: list[str] = []
     papers_by_date: dict[str, list[dict]] | None = None  # For testing
 
 
@@ -40,4 +41,5 @@ class PapersRankDeps(BaseModel):
     date_to_rank: str
     user_profile: str
     db: Any
+    ranked_dates: list[str] = []
     papers_by_date: dict[str, list[dict]] | None = None  # For testing

@@ -74,8 +74,29 @@ class InMemoryDB:
             date_key = str(params[0])
             return self._papers.get(date_key, [])
         if table == "rankings":
+            user_id = params[0]
+            # DISTINCT paper_date query
+            if "DISTINCT paper_date" in sql:
+                dates = sorted(
+                    {str(r["paper_date"]) for r in self._rankings if r["user_id"] == user_id},
+                    reverse=True,
+                )
+                return [{"paper_date": d} for d in dates]
+            # Single paper ranking lookup: params = (user_id, paper_id, paper_date)
+            if "r.paper_id = %s" in sql:
+                paper_id = params[1]
+                paper_date = str(params[2])
+                for r in self._rankings:
+                    if (
+                        r["user_id"] == user_id
+                        and r["paper_id"] == paper_id
+                        and str(r["paper_date"]) == paper_date
+                        and r["ranking_criteria_type"] == "profile"
+                    ):
+                        return [{"ranking": r["ranking"], "reason": r["reason"]}]
+                return []
             # JOIN rankings with papers: params = (user_id, paper_date)
-            user_id, paper_date = params[0], str(params[1])
+            paper_date = str(params[1])
             papers_idx = self._build_papers_index()
             results = []
             for r in self._rankings:
@@ -91,9 +112,9 @@ class InMemoryDB:
                         "ranking": r["ranking"],
                         "reason": r["reason"],
                         "title": p["title"],
-                        "summary": p["summary"],
-                        "authors": p["authors"],
-                        "upvotes": p["upvotes"],
+                        "summary": p.get("summary", ""),
+                        "authors": p.get("authors", []),
+                        "upvotes": p.get("upvotes", 0),
                     })
             results.sort(key=lambda x: x["ranking"], reverse=True)
             return results

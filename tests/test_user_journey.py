@@ -206,7 +206,7 @@ JOURNEY_CASES = [
         inputs=f"{HALLUCINATION_SENTINEL}:low_rank",
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
-            ValidateToolBehaviour(tool_fn_name="get_rankings"),
+            ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             JudgeOutput(
                 judge=JUDGE,
@@ -225,7 +225,7 @@ JOURNEY_CASES = [
         inputs=f"{HALLUCINATION_SENTINEL}:compare",
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
-            ValidateToolBehaviour(tool_fn_name="get_rankings"),
+            ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             JudgeOutput(
                 judge=JUDGE,
@@ -243,7 +243,7 @@ JOURNEY_CASES = [
         inputs=f"{HALLUCINATION_SENTINEL}:details",
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="discuss_papers"),
-            ValidateToolBehaviour(tool_fn_name="get_rankings"),
+            ValidateToolBehaviour(tool_fn_name="get_paper_index"),
             ValidateOutputTool(tool_fn_name="set_rankings", tool_call_wanted=False),
             JudgeOutput(
                 judge=JUDGE,

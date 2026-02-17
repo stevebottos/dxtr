@@ -101,9 +101,16 @@ def get_user_add_context(user_id: str, db: PostgresHelper) -> data_models.AddCon
         date_lines.append(f"  {d.strftime('%A')}: {d.isoformat()} ({label})")
     today_str = "\n".join(date_lines)
 
+    ranked_rows = db.query(
+        f"SELECT DISTINCT paper_date FROM {db.rankings_table} WHERE user_id = %s ORDER BY paper_date DESC",
+        (user_id,),
+    )
+    ranked_dates = [str(r["paper_date"]) for r in ranked_rows]
+
     return data_models.AddContext(
         user_profile_facts=user_profile_facts,
         today_date=today_str,
+        ranked_dates=ranked_dates,
     )
 
 
