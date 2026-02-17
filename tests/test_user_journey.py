@@ -22,6 +22,7 @@ TEST_USER_ID = "dev_user_steve"
 TEST_SESSION_ID = "papers_test_session"
 MOCK_DB = InMemoryDB()
 MOCK_STORE = InMemoryConversationStore()
+LATEST_PAPER_DATE = max(MOCK_DB._papers.keys())
 
 
 class JudgeResult(BaseModel):
@@ -260,7 +261,7 @@ JOURNEY_CASES = [
     ),
     Case(
         name="rank_papers",
-        inputs="Check what our most recently saved papers are (we don't save papers on weekends), and rank them for me.",
+        inputs=f"Rank papers for {LATEST_PAPER_DATE}",
         evaluators=[
             ValidateToolBehaviour(tool_fn_name="invoke_papers_agent"),
             ValidateOutputTool(tool_fn_name="set_rankings"),

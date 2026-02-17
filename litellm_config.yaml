@@ -10,7 +10,7 @@ environment_variables:
   LANGFUSE_OTEL_HOST: "os.environ/LANGFUSE_OTEL_HOST"
 
 # Model constant - change this to switch all agents
-x-model: &default_model openrouter/nvidia/nemotron-3-nano-30b-a3b
+x-model: &default_model openrouter/nvidia/nemotron-nano-9b-v2
 
 model_list:
   - model_name: master
